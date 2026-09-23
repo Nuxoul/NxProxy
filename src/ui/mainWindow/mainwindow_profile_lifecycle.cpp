@@ -200,7 +200,11 @@ void MainWindow::profile_start(int _id) {
         return;
     }
 
-    const auto group = Configs::dataManager->groupsRepo->GetGroup(ent->gid);
+
+    if (ent->type == "selector") {
+        MessageBoxInfo(tr("Selector"), tr("This is a proxy group. Start a concrete profile instead; routing rules can target this selector."));
+        return;
+    }
     if (group == nullptr || group->archive) return;
 
     // Ranking must run before the config is built and it blocks, so hop off the UI thread.

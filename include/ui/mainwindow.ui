@@ -685,6 +685,7 @@ QToolButton::menu-indicator {
     <addaction name="actionHide_window"/>
     <addaction name="separator"/>
     <addaction name="menu_add_from_input"/>
+    <addaction name="menu_add_selector"/>
     <addaction name="menu_add_from_clipboard"/>
     <addaction name="actionAdd_profile_from_File"/>
     <addaction name="menu_scan_qr"/>
@@ -725,6 +726,7 @@ QToolButton::menu-indicator {
      <addaction name="actionCopy_Test_Result"/>
     </widget>
     <addaction name="menu_add_from_input"/>
+    <addaction name="menu_add_selector"/>
     <addaction name="menu_add_from_clipboard"/>
     <addaction name="actionAdd_profile_from_File"/>
     <addaction name="menu_scan_qr"/>
@@ -838,6 +840,11 @@ QToolButton::menu-indicator {
    </property>
    <property name="shortcut">
     <string notr="true">Ctrl+N</string>
+   </property>
+  </action>
+  <action name="menu_add_selector">
+   <property name="text">
+    <string>Add Selector</string>
    </property>
   </action>
   <action name="menu_manage_groups">

@@ -677,9 +677,9 @@ namespace Configs {
             return res;
         }
         for (const auto& item: Rules) {
-            // its id names an endpoint built from endpointProfileIDs, not a routing outbound
+            // Endpoint placeholders use endpointProfileIDs; normal rules reference route outbounds by profile ID.
             if (item->type == endpointPreferredBy) continue;
-            res->push_back(item->outboundID);
+            if (!res->contains(item->outboundID)) res->push_back(item->outboundID);
         }
         return res;
     }

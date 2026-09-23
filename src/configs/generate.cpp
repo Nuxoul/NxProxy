@@ -155,8 +155,16 @@ namespace Configs {
             struct RouteOutboundGroup {
                 QList<int> hopIDs;
                 std::shared_ptr<Profile> chainWrapper;
+                QString explicitTag;
             };
             QList<RouteOutboundGroup> routeOutboundGroups;
+            struct SelectorGroup {
+                std::shared_ptr<Profile> profile;
+                QList<int> members;
+                QList<QString> memberTags;
+                int selectedID = -1;
+            };
+            QList<SelectorGroup> selectorGroups;
             struct AuxEndpointGroup {
                 QList<int> hopIDs;
                 QList<int> innerHopIndexes;
@@ -577,14 +585,45 @@ namespace Configs {
             preReqs.routing.outboundMap[warpBypassID] = settings.enable_warp ? tags::warpBypass : tags::proxy;
             int suffix = 0;
             if (proxyPathUsesXray(ctx.ent)) ctx.proxyUsesXray = true;
-            for (const auto &item: *neededOutbounds) {
+            for (const auto &item : *neededOutbounds) {
                 if (item < 0) continue;
-                auto neededEnt = getProfile(item);
-                if (neededEnt == nullptr) {
+                const auto neededEnt = getProfile(item);
+                if (neededEnt == nullptr || neededEnt->outbound == nullptr) {
                     ctx.error = "The routing profile is referencing outbounds that no longer exist, consider revising your settings";
                     return;
                 }
-                if ((neededEnt->outbound != nullptr && neededEnt->outbound->IsExtraCore()) || isCustomFullConfig(neededEnt) || isXrayFullConfig(neededEnt)) {
+                if (neededEnt->type == "selector") {
+                    const auto selector = neededEnt->Selector();
+                    const auto group = dataManager->groupsRepo->GetGroup(neededEnt->gid);
+                    if (selector == nullptr || group == nullptr || selector->members.isEmpty()) {
+                        ctx.error = QObject::tr("Selector %1 has no valid members").arg(neededEnt->name);
+                        return;
+                    }
+                    RoutingDeps::SelectorGroup selectorGroup;
+                    selectorGroup.profile = neededEnt;
+                    selectorGroup.selectedID = selector->selectedID;
+                    for (const int memberID : selector->members) {
+                        const auto member = getProfile(memberID);
+                        if (member == nullptr || member->outbound == nullptr || member->gid != neededEnt->gid
+                            || memberID == neededEnt->id || member->type == "selector" || member->type == "autoselector"
+                            || member->type == "chain" || member->type == "direct" || member->type == "extracore"
+                            || isCustomFullConfig(member) || isXrayFullConfig(member) || selectorGroup.members.contains(memberID)) continue;
+                        selectorGroup.members.append(memberID);
+                        selectorGroup.memberTags.append(hopTag(tags::routeChainPrefix, suffix));
+                        preReqs.routing.routeOutboundGroups << RoutingDeps::RouteOutboundGroup{
+                            QList<int>{memberID}, nullptr, selectorGroup.memberTags.last()};
+                        if (usesXrayCore(member)) ctx.proxyUsesXray = true;
+                        suffix++;
+                    }
+                    if (selectorGroup.members.isEmpty() || !selectorGroup.members.contains(selectorGroup.selectedID)) {
+                        ctx.error = QObject::tr("Selector %1 has no usable members or its default member is invalid").arg(neededEnt->name);
+                        return;
+                    }
+                    preReqs.routing.outboundMap[item] = QString("selector-%1").arg(item);
+                    preReqs.routing.selectorGroups.append(selectorGroup);
+                    continue;
+                }
+                if (neededEnt->outbound->IsExtraCore() || isCustomFullConfig(neededEnt) || isXrayFullConfig(neededEnt)) {
                     ctx.error = "Outbounds used in routing profile cannot use an extra core or be a custom full config";
                     return;
                 }
@@ -595,19 +634,19 @@ namespace Configs {
                         return;
                     }
                     for (int hopID : chain->list) {
-                        auto hopEnt = getProfile(hopID);
+                        const auto hopEnt = getProfile(hopID);
                         if (hopEnt == nullptr) {
                             ctx.error = "Chain outbound in routing profile contains a missing profile";
                             return;
                         }
-                        if ((hopEnt->outbound != nullptr && hopEnt->outbound->IsExtraCore()) || isCustomFullConfig(hopEnt) || isXrayFullConfig(hopEnt) || hopEnt->type == "chain") {
-                            ctx.error = "Chain hops in routing profile cannot use an extra core, a custom full config, or be of type chain";
+                        if ((hopEnt->outbound != nullptr && hopEnt->outbound->IsExtraCore()) || isCustomFullConfig(hopEnt)
+                            || isXrayFullConfig(hopEnt) || hopEnt->type == "chain" || hopEnt->type == "selector") {
+                            ctx.error = "Chain hops in routing profile cannot use an extra core, full config, chain, or selector";
                             return;
                         }
                         if (usesXrayCore(hopEnt)) ctx.proxyUsesXray = true;
                     }
                     preReqs.routing.outboundMap[item] = hopTag(tags::routeChainPrefix, suffix);
-                    // Reversed to match the main-chain build order: outer hop first.
                     preReqs.routing.routeOutboundGroups << RoutingDeps::RouteOutboundGroup{{chain->list.rbegin(), chain->list.rend()}, neededEnt};
                     suffix += static_cast<int>(chain->list.size());
                 } else {
@@ -1322,12 +1361,14 @@ namespace Configs {
             bool warpWrap = false;
             bool auxiliary = false;
             QSet<QString> addressableTags;
+            QString explicitTag;
         };
 
         void buildSingboxChain(BuildContext &ctx, const QList<std::shared_ptr<Profile>> &ents, const hopChainOptions &opts) {
             for (int idx = 0; idx < ents.size(); idx++)
             {
                 auto tag = hopTag(opts.prefix, opts.startSuffix + idx);
+                if (idx == 0 && !opts.explicitTag.isEmpty()) tag = opts.explicitTag;
                 QString nextTag;
                 if (idx < ents.size() - 1) nextTag = hopTag(opts.prefix, opts.startSuffix + idx + 1);
                 if (opts.includeProxy && idx == 0) tag = tags::proxy;
@@ -1849,11 +1890,30 @@ namespace Configs {
                     .prefix = tags::routeChainPrefix,
                     .link = routeGroup.hopIDs.size() > 1,
                     .startSuffix = routeSuffix,
+                    .explicitTag = routeGroup.explicitTag,
                 });
-                if (routeGroup.chainWrapper != nullptr && !ctx.result->chainGroups.isEmpty()) {
+                if (!ctx.error.isEmpty()) return;
+                if (routeGroup.chainWrapper != nullptr && !ctx.result->chainGroups.isEmpty())
                     ctx.result->chainGroups.last().profiles.append(routeGroup.chainWrapper);
-                }
                 routeSuffix += static_cast<int>(routeGroup.hopIDs.size());
+            }
+            for (const auto& selectorGroup : ctx.prerequisites.routing.selectorGroups) {
+                QJsonArray memberTags;
+                QString defaultTag;
+                for (qsizetype i = 0; i < selectorGroup.memberTags.size(); ++i) {
+                    memberTags.append(selectorGroup.memberTags[i]);
+                    if (selectorGroup.members[i] == selectorGroup.selectedID) defaultTag = selectorGroup.memberTags[i];
+                }
+                if (selectorGroup.profile == nullptr || memberTags.isEmpty() || defaultTag.isEmpty()) {
+                    ctx.error = QObject::tr("Selector group could not resolve its member outbounds");
+                    return;
+                }
+                ctx.outbounds.append(QJsonObject{
+                    {"type", "selector"},
+                    {"tag", QString("selector-%1").arg(selectorGroup.profile->id)},
+                    {"outbounds", memberTags},
+                    {"default", defaultTag},
+                });
             }
 
             // preferred_by resolves an endpoint out of the endpoint manager, so nothing detours into these.

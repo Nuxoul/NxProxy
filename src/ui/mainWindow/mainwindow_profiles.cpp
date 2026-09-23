@@ -58,6 +58,10 @@ void MainWindow::on_menu_add_from_input_triggered() {
     connect(dialog, &QDialog::finished, dialog, &QDialog::deleteLater);
 }
 
+void MainWindow::on_menu_add_selector_triggered() {
+    auto dialog = new DialogEditProfile("selector", Configs::dataManager->settingsRepo->current_group, this);
+    connect(dialog, &QDialog::finished, dialog, &QDialog::deleteLater);
+}
 void MainWindow::on_menu_add_from_clipboard_triggered() {
     auto clipboard = QApplication::clipboard()->text();
     import_or_handle_deeplink(clipboard);

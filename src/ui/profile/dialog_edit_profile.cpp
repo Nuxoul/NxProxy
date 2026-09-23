@@ -45,6 +45,7 @@
 #include "include/ui/profile/edit_naive.h"
 #include "include/ui/profile/edit_shadowtls.h"
 #include "include/ui/profile/edit_xrayvless.h"
+#include "include/ui/profile/edit_selector.h"
 
 #define LOAD_TYPE(a) ui->type->addItem(Configs::dataManager->profilesRepo->NewProfile(a)->outbound->DisplayType(), a);
 
@@ -342,6 +343,7 @@ DialogEditProfile::DialogEditProfile(const QString &_type, int profileOrGroupId,
         ui->type->addItem(tr("Custom (Xray config)"), Configs::Custom::CustomXrayFullConfig);
         ui->type->addItem(tr("Extra Core"), "extracore");
         LOAD_TYPE("chain")
+        LOAD_TYPE("selector")
 
         connect(ui->type, &QComboBox::currentIndexChanged, this, [=,this](int index) {
             typeSelected(ui->type->itemData(index).toString());
@@ -384,6 +386,10 @@ void DialogEditProfile::typeSelected(const QString &newType) {
         innerEditor = _innerWidget;
     } else if (type == "autoselector") {
         auto _innerWidget = new EditAutoSelector(this);
+        innerWidget = _innerWidget;
+        innerEditor = _innerWidget;
+    } else if (type == "selector") {
+        auto _innerWidget = new EditSelector(this);
         innerWidget = _innerWidget;
         innerEditor = _innerWidget;
     } else if (type == "vmess") {
@@ -538,6 +544,7 @@ void DialogEditProfile::typeSelected(const QString &newType) {
     auto showAddressPort = type != "chain"
                            && type != "autoselector"
                            && type != "direct"
+                           && type != "selector"
                            && customType != Configs::Custom::CustomOutbound
                            && customType != Configs::Custom::CustomFullConfig
                            && customType != Configs::Custom::CustomXrayOutbound
@@ -811,6 +818,28 @@ bool DialogEditProfile::validateHeaders() {
 bool DialogEditProfile::onEnd() {
     if (!innerEditor->onEnd()) {
         return false;
+
+    if (ent->type == "selector") {
+        const auto selector = ent->Selector();
+        if (selector == nullptr || selector->members.isEmpty()) {
+            MessageBoxWarning(tr("Selector"), tr("Add at least one member profile."));
+            return false;
+        }
+        QSet<int> unique;
+        for (const int memberID : selector->members) {
+            const auto member = Configs::dataManager->profilesRepo->GetProfile(memberID);
+            if (member == nullptr || member->gid != ent->gid || memberID == ent->id || unique.contains(memberID)
+                || member->type == "selector" || member->type == "autoselector" || member->type == "chain"
+                || member->type == "direct" || member->type == "extracore") {
+                MessageBoxWarning(tr("Selector"), tr("Selector members must be unique, valid profiles from the same group; nested groups are not supported."));
+                return false;
+            }
+            unique.insert(memberID);
+        }
+        if (!unique.contains(selector->selectedID)) {
+            MessageBoxWarning(tr("Selector"), tr("Choose a default member from this selector."));
+            return false;
+        }
     }
 
     if (!validateHeaders()) return false;

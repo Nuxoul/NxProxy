@@ -90,21 +90,38 @@ RouteItem::RouteItem(QWidget *parent, const std::shared_ptr<Configs::RouteProfil
         ui->route_items->addItem(item->name);
     }
 
-    outbounds = {"proxy", "direct", "warp-bypass"};
-    outboundMap[0] = -1;
-    outboundMap[1] = -2;
-    outboundMap[2] = Configs::warpBypassID;
-    auto proxyListRaw = Configs::dataManager->profilesRepo->GetAllProfileIDNameMapped();
+    outbounds.clear();
+    outboundMap.clear();
+    const QList<QPair<QString, int>> builtinOutbounds = {
+        {"proxy", -1}, {"direct", -2}, {"block", -3}, {"warp-bypass", Configs::warpBypassID}
+    };
+    for (const auto& [name, id] : builtinOutbounds) {
+        outboundMap[static_cast<int>(outbounds.size())] = id;
+        outbounds << name;
+    }
+    const auto proxyListRaw = Configs::dataManager->profilesRepo->GetAllProfileIDNameMapped();
     QMap<int, QString> idToName;
     for (const auto& [id, name] : proxyListRaw) idToName.insert(id, name);
-    auto groupIDs = Configs::dataManager->groupsRepo->GetGroupsTabOrder();
-    for (auto groupID : groupIDs) {
-        auto group = Configs::dataManager->groupsRepo->GetGroup(groupID);
+    const auto groupIDs = Configs::dataManager->groupsRepo->GetGroupsTabOrder();
+    for (const auto groupID : groupIDs) {
+        const auto group = Configs::dataManager->groupsRepo->GetGroup(groupID);
         if (!group) continue;
-        for (int profileID : group->profiles) {
+        for (const int profileID : group->Profiles()) {
+            const auto profile = Configs::dataManager->profilesRepo->GetProfile(profileID);
+            if (profile == nullptr || profile->type != "selector") continue;
+            outboundMap[static_cast<int>(outbounds.size())] = profileID;
+            outbounds << QString("[Selector] ") + profile->name;
+        }
+    }
+    for (const auto groupID : groupIDs) {
+        const auto group = Configs::dataManager->groupsRepo->GetGroup(groupID);
+        if (!group) continue;
+        for (const int profileID : group->Profiles()) {
             if (!idToName.contains(profileID)) continue;
-            outboundMap[outboundMap.size()] = profileID;
-            outbounds << QString("[" + group->name + "] ") + idToName[profileID];
+            const auto profile = Configs::dataManager->profilesRepo->GetProfile(profileID);
+            if (profile == nullptr || profile->type == "selector") continue;
+            outboundMap[static_cast<int>(outbounds.size())] = profileID;
+            outbounds << QString("[") + group->name + "] " + idToName[profileID];
         }
     }
 
@@ -135,7 +152,12 @@ RouteItem::RouteItem(QWidget *parent, const std::shared_ptr<Configs::RouteProfil
 
     ensurePlusTabBuiltOnce();
 
-    ui->def_out->setCurrentText(Configs::outboundIDToString(chain->defaultOutboundID));
+    ui->def_out->clear();
+    const QList<QPair<QString, int>> builtinOutbounds = {
+        {"proxy", -1}, {"direct", -2}, {"block", -3}, {"warp-bypass", Configs::warpBypassID}
+    };
+    for (const auto& [name, id] : builtinOutbounds) ui->def_out->addItem(name, id);
+    ui->def_out->setCurrentIndex(ui->def_out->findData(chain->defaultOutboundID));
 
     QStringList ruleItems = {"domain:", "suffix:", "regex:", "keyword:", "ip:", "processName:", "processPath:", "ruleset:"};
     for (const auto& item : ruleSetList) {
@@ -591,7 +613,7 @@ void RouteItem::reloadRuleViewsFromChain() {
     simpleBlock->setPlainText(chain->GetSimpleRules(Configs::block));
     simpleProxy->setPlainText(chain->GetSimpleRules(Configs::proxy));
     simpleWarpBypass->setPlainText(chain->GetSimpleRules(Configs::warpBypass));
-    ui->def_out->setCurrentText(Configs::outboundIDToString(chain->defaultOutboundID));
+    ui->def_out->setCurrentIndex(ui->def_out->findData(chain->defaultOutboundID));
 }
 
 void RouteItem::accept() {
@@ -635,7 +657,7 @@ void RouteItem::accept() {
         return;
     }
 
-    chain->defaultOutboundID = Configs::stringToOutboundID(ui->def_out->currentText());
+    chain->defaultOutboundID = ui->def_out->currentData().toInt(-1);
 
     if (missingEndpoints > 0) {
         MessageBoxInfo(tr("Endpoints"),
@@ -708,12 +730,15 @@ QWidget* RouteItem::makeAttributeEditorPage(const QString& attr) {
             auto* cb = new QComboBox(container);
             if (attr == QStringLiteral("outbound")) {
                 cb->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-                cb->addItems(outbounds);
-                cb->setCurrentText(get_outbound_name(rule->outboundID));
-                connect(cb, &QComboBox::currentTextChanged, this, [this, cb] {
-                    if (currentIndex < 0) return;
+                for (int i = 0; i < outbounds.size(); ++i) cb->addItem(outbounds[i], i);
+                int current = -1;
+                for (auto it = outboundMap.begin(); it != outboundMap.end(); ++it)
+                    if (it->second == rule->outboundID) { current = it->first; break; }
+                cb->setCurrentIndex(current);
+                connect(cb, &QComboBox::currentIndexChanged, this, [this, cb](int index) {
+                    if (currentIndex < 0 || !outboundMap.contains(index)) return;
                     chain->Rules[currentIndex]->set_field_value(QStringLiteral("outbound"),
-                        {QString::number(outboundMap[cb->currentIndex()])});
+                        {QString::number(outboundMap[index])});
                     updateRulePreview();
                 });
             } else {

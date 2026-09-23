@@ -10,6 +10,7 @@
 #include "include/configs/outbounds/direct.h"
 #include "include/configs/outbounds/chain.h"
 #include "include/configs/outbounds/autoselector.h"
+#include "include/configs/outbounds/selector.h"
 #include "include/configs/outbounds/custom.h"
 #include "include/configs/outbounds/extracore.h"
 #include "include/configs/outbounds/socks.h"
@@ -173,10 +174,13 @@ namespace Configs {
             return dynamic_cast<Configs::autoSelector *>(outbound.get());
         };
 
+        [[nodiscard]] Configs::selector *Selector() const {
+            return dynamic_cast<Configs::selector *>(outbound.get());
+        };
+
         [[nodiscard]] Configs::direct *Direct() const {
             return dynamic_cast<Configs::direct *>(outbound.get());
         };
-
         [[nodiscard]] Configs::extracore *ExtraCore() const {
             return dynamic_cast<Configs::extracore *>(outbound.get());
         };

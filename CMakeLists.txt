@@ -491,6 +491,9 @@ set(PROJECT_SOURCES
         include/configs/outbounds/custom.h
         include/configs/outbounds/chain.h
         include/configs/outbounds/autoselector.h
+        include/ui/profile/edit_selector.h
+        src/ui/profile/edit_selector.cpp
+        include/configs/outbounds/selector.h
         src/configs/outbounds/autoselector.cpp
         include/configs/AutoSelectorPlan.h
         src/configs/AutoSelectorPlan.cpp
