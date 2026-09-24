@@ -453,50 +453,35 @@ QToolButton::menu-indicator {
           </widget>
          </item>
          <item>
-          <widget class="QWidget" name="selectorPanel">
+          <widget class="QScrollArea" name="selectorCardsScroll">
            <property name="minimumSize">
             <size>
              <width>0</width>
-             <height>150</height>
+             <height>170</height>
             </size>
            </property>
-           <layout class="QHBoxLayout" name="selectorPanelLayout">
-            <item>
-             <layout class="QVBoxLayout" name="selectorGroupsColumn">
-              <item>
-               <widget class="QLabel" name="selectorGroupsLabel">
-                <property name="text">
-                 <string>Strategy groups</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QListWidget" name="selectorGroupList">
-                <property name="minimumSize">
-                 <size>
-                  <width>180</width>
-                  <height>0</height>
-                 </size>
-                </property>
-               </widget>
-              </item>
-             </layout>
-            </item>
-            <item>
-             <layout class="QVBoxLayout" name="selectorMembersColumn">
-              <item>
-               <widget class="QLabel" name="selectorMembersLabel">
-                <property name="text">
-                 <string>Members — click to use</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QListWidget" name="selectorMemberList"/>
-              </item>
-             </layout>
-            </item>
-           </layout>
+           <property name="widgetResizable">
+            <bool>true</bool>
+           </property>
+           <widget class="QWidget" name="selectorCardsContainer">
+            <layout class="QVBoxLayout" name="selectorCardsLayout">
+             <property name="spacing">
+              <number>8</number>
+             </property>
+             <property name="leftMargin">
+              <number>8</number>
+             </property>
+             <property name="topMargin">
+              <number>6</number>
+             </property>
+             <property name="rightMargin">
+              <number>8</number>
+             </property>
+             <property name="bottomMargin">
+              <number>6</number>
+             </property>
+            </layout>
+           </widget>
           </widget>
          </item>
         </layout>

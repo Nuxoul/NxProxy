@@ -413,25 +413,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     ui->profilesTableView->setModel(profilesFilterModel);
     connect(ui->profilesTableView->selectionModel(), &QItemSelectionModel::selectionChanged, this,
             [this] { refresh_startstop_button(); });
-    connect(ui->selectorGroupList, &QListWidget::currentItemChanged, this,
-            [this](QListWidgetItem *current) {
-                selectedSelectorId = current == nullptr ? -1 : current->data(Qt::UserRole).toInt();
-                show_selector_members(selectedSelectorId);
-            });
-    connect(ui->selectorMemberList, &QListWidget::itemClicked, this,
-            [this](QListWidgetItem *item) {
-                if (item == nullptr || selectedSelectorId < 0) return;
-                const auto selectorProfile = Configs::dataManager->profilesRepo->GetProfile(selectedSelectorId);
-                if (selectorProfile == nullptr || selectorProfile->type != "selector") return;
-                const int memberId = item->data(Qt::UserRole).toInt();
-                auto selector = selectorProfile->Selector();
-                if (selector == nullptr || !selector->members.contains(memberId)) return;
-                selector->selectedID = memberId;
-                Configs::dataManager->profilesRepo->Save(selectorProfile);
-                show_selector_members(selectedSelectorId);
-                if (Configs::dataManager->settingsRepo->started_id >= 0)
-                    noteRestartNeeded(tr("Strategy group %1").arg(selectorProfile->name));
-            });
     refresh_selector_panel();
     ui->profilesTableView->rowsSwapped = [this](int row1, int row2)
     {

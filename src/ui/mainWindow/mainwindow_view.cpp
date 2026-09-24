@@ -5,7 +5,9 @@
 #include <QHeaderView>
 #include <QScrollBar>
 #include <QTimer>
-#include <QToolButton>
+#include <QGridLayout>
+#include <QGroupBox>
+#include <QPushButton>
 
 #include "include/api/RPC.h"
 #include "include/database/GroupsRepo.h"
@@ -435,53 +437,68 @@ void MainWindow::url_test_current() {
 }
 void MainWindow::refresh_selector_panel()
 {
-    if (ui->selectorGroupList == nullptr || ui->selectorMemberList == nullptr) return;
+    if (ui->selectorCardsLayout == nullptr) return;
     const auto group = Configs::dataManager->groupsRepo->CurrentGroup();
     if (group == nullptr) return;
-    const int previous = selectedSelectorId;
-    ui->selectorGroupList->blockSignals(true);
-    ui->selectorGroupList->clear();
-    QList<int> selectorIds;
-    for (const int id : group->profiles) {
-        const auto profile = Configs::dataManager->profilesRepo->GetProfile(id);
+    while (ui->selectorCardsLayout->count() > 0) {
+        auto *item = ui->selectorCardsLayout->takeAt(0);
+        if (item->widget() != nullptr) item->widget()->deleteLater();
+        delete item;
+    }
+    int selectorCount = 0;
+    for (const int selectorId : group->profiles) {
+        const auto profile = Configs::dataManager->profilesRepo->GetProfile(selectorId);
         if (profile == nullptr || profile->type != "selector") continue;
-        selectorIds.append(id);
-        auto *item = new QListWidgetItem(profile->name, ui->selectorGroupList);
-        item->setData(Qt::UserRole, id);
-        item->setToolTip(tr("Select a member on the right to change this group's default node."));
+        const auto selector = profile->Selector();
+        if (selector == nullptr) continue;
+        ++selectorCount;
+        auto *card = new QGroupBox(ui->selectorCardsContainer);
+        card->setTitle(QString("%1   ·   %2 member(s)").arg(profile->name).arg(selector->members.size()));
+        card->setCheckable(true);
+        card->setChecked(selectorId == selectedSelectorId);
+        card->setStyleSheet("QGroupBox { font-weight: 600; border: 1px solid palette(mid); border-radius: 6px; margin-top: 8px; padding-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }");
+        auto *layout = new QGridLayout(card);
+        layout->setSpacing(6);
+        int column = 0;
+        int row = 0;
+        for (const int memberId : selector->members) {
+            const auto member = Configs::dataManager->profilesRepo->GetProfile(memberId);
+            if (member == nullptr) continue;
+            auto *button = new QPushButton(member->outbound->DisplayTypeAndName(), card);
+            button->setCheckable(true);
+            button->setChecked(memberId == selector->selectedID);
+            button->setToolTip(memberId == selector->selectedID ? tr("Current node") : tr("Use this node for %1").arg(profile->name));
+            button->setStyleSheet(memberId == selector->selectedID ? "QPushButton { background: #1976d2; color: white; font-weight: 600; }" : "");
+            connect(button, &QPushButton::clicked, this, [this, selectorId, memberId] {
+                const auto selectorProfile = Configs::dataManager->profilesRepo->GetProfile(selectorId);
+                if (selectorProfile == nullptr || selectorProfile->Selector() == nullptr) return;
+                selectorProfile->Selector()->selectedID = memberId;
+                Configs::dataManager->profilesRepo->Save(selectorProfile);
+                selectedSelectorId = selectorId;
+                refresh_selector_panel();
+                if (Configs::dataManager->settingsRepo->started_id >= 0)
+                    noteRestartNeeded(tr("Strategy group %1").arg(selectorProfile->name));
+            });
+            layout->addWidget(button, row, column++);
+            if (column == 3) { column = 0; ++row; }
+        }
+        connect(card, &QGroupBox::toggled, this, [this, selectorId](bool expanded) {
+            selectedSelectorId = selectorId;
+            if (auto *cardWidget = qobject_cast<QGroupBox *>(sender())) {
+                for (int i = 0; i < cardWidget->layout()->count(); ++i)
+                    if (auto *child = cardWidget->layout()->itemAt(i)->widget()) child->setVisible(expanded);
+            }
+        });
+        for (int i = 0; i < layout->count(); ++i)
+            if (auto *child = layout->itemAt(i)->widget()) child->setVisible(card->isChecked());
+        ui->selectorCardsLayout->addWidget(card);
     }
-    int row = selectorIds.indexOf(previous);
-    if (row < 0 && !selectorIds.isEmpty()) row = 0;
-    if (row >= 0) {
-        ui->selectorGroupList->setCurrentRow(row);
-        selectedSelectorId = selectorIds[row];
-    } else {
-        selectedSelectorId = -1;
-    }
-    ui->selectorGroupList->blockSignals(false);
-    show_selector_members(selectedSelectorId);
+    ui->selectorCardsContainer->setMinimumHeight(selectorCount == 0 ? 0 : 180);
+    ui->selectorCardsScroll->setVisible(selectorCount > 0);
 }
 
 void MainWindow::show_selector_members(int selectorId)
 {
-    if (ui->selectorMemberList == nullptr) return;
-    ui->selectorMemberList->clear();
-    const auto selectorProfile = Configs::dataManager->profilesRepo->GetProfile(selectorId);
-    if (selectorProfile == nullptr || selectorProfile->type != "selector") return;
-    const auto selector = selectorProfile->Selector();
-    if (selector == nullptr) return;
-    for (const int memberId : selector->members) {
-        const auto member = Configs::dataManager->profilesRepo->GetProfile(memberId);
-        if (member == nullptr) continue;
-        auto *item = new QListWidgetItem(member->outbound->DisplayTypeAndName(), ui->selectorMemberList);
-        item->setData(Qt::UserRole, memberId);
-        item->setToolTip(memberId == selector->selectedID ? tr("Current node") : tr("Click to use this node for the group"));
-        if (memberId == selector->selectedID) {
-            QFont font = item->font();
-            font.setBold(true);
-            item->setFont(font);
-            item->setText(tr("✓ %1").arg(item->text()));
-            ui->selectorMemberList->setCurrentItem(item);
-        }
-    }
+    selectedSelectorId = selectorId;
+    refresh_selector_panel();
 }
