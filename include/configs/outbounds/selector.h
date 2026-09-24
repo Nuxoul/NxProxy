@@ -10,6 +10,8 @@ namespace Configs {
     public:
         QList<int> members;
         int selectedID = -1;
+        bool managedBySubscription = false;
+        QString remoteGroup;
 
         QString DisplayType() override { return QObject::tr("Selector"); }
         QString DisplayAddress() override { return QObject::tr("%1 member(s)").arg(members.size()); }
@@ -26,6 +28,8 @@ namespace Configs {
                 }
             }
             if (object.contains("selected_id")) selectedID = object.value("selected_id").toInt(-1);
+            managedBySubscription = object.value("managed_by_subscription").toBool(false);
+            remoteGroup = object.value("remote_group").toString();
             if (!members.contains(selectedID)) selectedID = members.isEmpty() ? -1 : members.first();
             return true;
         }
@@ -34,10 +38,8 @@ namespace Configs {
             QJsonArray values;
             for (const int id : members) values.append(id);
             return QJsonObject{
-                {"name", name},
-                {"type", "selector"},
-                {"members", values},
-                {"selected_id", selectedID},
+                {"name", name}, {"type", "selector"}, {"members", values}, {"selected_id", selectedID},
+                {"managed_by_subscription", managedBySubscription}, {"remote_group", remoteGroup}
             };
         }
 

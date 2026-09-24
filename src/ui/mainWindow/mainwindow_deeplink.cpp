@@ -254,25 +254,8 @@ void MainWindow::import_or_handle_deeplink(const QString &text) {
 void MainWindow::import_text(const QString &text) {
     const auto content = text.trimmed();
     if (content.startsWith("http://") || content.startsWith("https://")) {
-        const QStringList items{
-            QObject::tr("Add profiles to this group"),
-            QObject::tr("Create new subscription group"),
-            QObject::tr("Import HTTP proxy profile"),
-        };
-        bool ok = false;
-        const auto choice = QInputDialog::getItem(nullptr, QObject::tr("url detected"),
-                                                  QObject::tr("%1\nHow to update?").arg(content), items, 0, false, &ok);
-        if (!ok) return;
-        switch (items.indexOf(choice)) {
-            case 0:
-                Subscription::updater()->ImportUrl(content);
-                return;
-            case 1:
-                Subscription::updater()->SubscribeUrl(content);
-                return;
-            default:
-                break;
-        }
+        Subscription::updater()->ImportUrl(content);
+        return;
     }
     Subscription::updater()->ImportText(content);
 }

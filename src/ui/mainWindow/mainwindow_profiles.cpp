@@ -51,16 +51,19 @@ void MainWindow::on_profilesTableView_doubleClicked(const QModelIndex &index) {
     }
     auto dialog = new DialogEditProfile("", id, this);
     connect(dialog, &QDialog::finished, dialog, &QDialog::deleteLater);
+    dialog->show();
 }
 
 void MainWindow::on_menu_add_from_input_triggered() {
     auto dialog = new DialogEditProfile("autoselector", Configs::dataManager->settingsRepo->current_group, this);
     connect(dialog, &QDialog::finished, dialog, &QDialog::deleteLater);
+    dialog->show();
 }
 
 void MainWindow::on_menu_add_selector_triggered() {
     auto dialog = new DialogEditProfile("selector", Configs::dataManager->settingsRepo->current_group, this);
     connect(dialog, &QDialog::finished, dialog, &QDialog::deleteLater);
+    dialog->show();
 }
 void MainWindow::on_menu_add_from_clipboard_triggered() {
     auto clipboard = QApplication::clipboard()->text();

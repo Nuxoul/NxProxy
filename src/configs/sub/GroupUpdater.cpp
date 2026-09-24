@@ -88,6 +88,7 @@ namespace Subscription {
             }
 
             QList<NewEntry> entries;
+            QList<ProxyGroup> proxyGroups;
 
         private:
             int gid;
@@ -99,6 +100,7 @@ namespace Subscription {
         ParseSink sinkFor(ImportSink &sink) {
             ParseSink parseSink;
             parseSink.profile = [&sink](std::shared_ptr<Configs::Profile> ent) { sink.add(std::move(ent)); };
+            parseSink.proxyGroup = [&sink](const ProxyGroup &group) { sink.proxyGroups.append(group); };
             parseSink.log = [](const QString &line) { MW_show_log(line); };
             parseSink.warn = [](const QString &title, const QString &text) {
                 runOnUiThread([=] { MessageBoxWarning(title, text); });
@@ -106,6 +108,52 @@ namespace Subscription {
             return parseSink;
         }
 
+        void applyProxyGroups(int gid, const QList<ProxyGroup> &groups) {
+            if (groups.isEmpty()) return;
+            const auto group = Configs::dataManager->groupsRepo->GetGroup(gid < 0 ? Configs::dataManager->settingsRepo->current_group : gid);
+            if (group == nullptr) return;
+            QHash<QString, int> profilesByName;
+            for (const int id : group->profiles) {
+                const auto profile = Configs::dataManager->profilesRepo->GetProfile(id);
+                if (profile == nullptr || profile->type == "selector" || profile->type == "autoselector") continue;
+                if (!profile->outbound->name.isEmpty()) profilesByName.insert(profile->outbound->name, id);
+            }
+            int changed = 0;
+            for (const auto &remote : groups) {
+                if (remote.type.compare("select", Qt::CaseInsensitive) != 0 || remote.name.isEmpty()) continue;
+                QList<int> members;
+                for (const auto &name : remote.proxies) {
+                    const int id = profilesByName.value(name, -1);
+                    if (id >= 0 && !members.contains(id)) members.append(id);
+                }
+                if (members.isEmpty()) continue;
+                std::shared_ptr<Configs::Profile> selectorProfile;
+                for (const int id : group->profiles) {
+                    const auto candidate = Configs::dataManager->profilesRepo->GetProfile(id);
+                    if (candidate != nullptr && candidate->type == "selector" && candidate->Selector()->managedBySubscription && candidate->Selector()->remoteGroup == remote.name) {
+                        selectorProfile = candidate;
+                        break;
+                    }
+                }
+                if (selectorProfile == nullptr) {
+                    selectorProfile = Configs::ProfilesRepo::NewProfile("selector");
+                    selectorProfile->outbound->name = remote.name;
+                    selectorProfile->Selector()->managedBySubscription = true;
+                    selectorProfile->Selector()->remoteGroup = remote.name;
+                    if (!Configs::dataManager->profilesRepo->AddProfile(selectorProfile, group->id)) continue;
+                }
+                auto selector = selectorProfile->Selector();
+                const int oldSelected = selector->selectedID;
+                selector->members = members;
+                int selected = profilesByName.value(remote.selected, -1);
+                if (!members.contains(selected)) selected = members.contains(oldSelected) ? oldSelected : members.first();
+                selector->selectedID = selected;
+                selector->name = remote.name;
+                Configs::dataManager->profilesRepo->Save(selectorProfile);
+                ++changed;
+            }
+            if (changed > 0) MW_show_log(QObject::tr("Imported or updated %1 selector group(s).").arg(changed));
+        }
         QString notice(const QStringList &names, const QString &prefix, const QString &action) {
             if (names.size() >= 1000) return QStringLiteral("%1 %2 %3\n").arg(prefix, action).arg(names.size());
             QString result;
@@ -267,7 +315,7 @@ namespace Subscription {
         MW_show_log(">>>>>>>> " + QObject::tr("Processing subscription data..."));
         for (auto &document : documents) ParseDocument(std::move(document), sinkFor(sink));
         sink.flush();
-        MW_show_log(">>>>>>>> " + QObject::tr("Process complete, applying..."));
+        applyProxyGroups(gid, sink.proxyGroups);
 
         settings->imported_count = sink.entries.size();
         MW_dialog_message(MwMessage::SubscriptionFinished, {});
@@ -291,7 +339,11 @@ namespace Subscription {
         groupsRepo->Save(group);
 
         // Auto selectors are local state, not servers the remote sent: keep them out of the diff.
-        const auto selectorIds = profilesRepo->GetProfileIdsByType("autoselector");
+        QList<int> selectorIds;
+        for (const int id : group->profiles) {
+            const auto profile = profilesRepo->GetProfile(id);
+            if (profile != nullptr && (profile->type == "autoselector" || profile->type == "selector")) selectorIds << id;
+        }
         const QSet<int> selectors(selectorIds.begin(), selectorIds.end());
         QList<QPair<int, int>> sticky;
         QSet<int> stickyIDs;
@@ -339,7 +391,7 @@ namespace Subscription {
         MW_show_log(">>>>>>>> " + QObject::tr("Processing subscription data..."));
         ParseDocument(std::move(body), sinkFor(sink));
         sink.flush();
-        MW_show_log(">>>>>>>> " + QObject::tr("Process complete, applying..."));
+        applyProxyGroups(gid, sink.proxyGroups);
 
         QString change_text;
         if (cleared) {
