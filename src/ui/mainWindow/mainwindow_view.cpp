@@ -112,6 +112,7 @@ void MainWindow::applyProfileFilters()
 {
     if (!profilesFilterModel) return;
     profilesFilterModel->setFilters(typeFilterString, addressFilterString, nameFilterString, countryFilterString);
+    refresh_selector_panel();
     refresh_proxy_list_column_size();
 }
 
@@ -343,7 +344,7 @@ void MainWindow::refresh_proxy_list_impl(const QList<int>& ids, bool mayNeedRese
         MW_show_log("Could not find current group!");
         return;
     }
-    refresh_proxy_list_impl_refresh_data(ids, mayNeedReset);
+    refresh_selector_panel();
     refresh_proxy_list_column_size();
 }
 
@@ -431,4 +432,56 @@ void MainWindow::url_test_current() {
             }
         });
     });
+}
+void MainWindow::refresh_selector_panel()
+{
+    if (ui->selectorGroupList == nullptr || ui->selectorMemberList == nullptr) return;
+    const auto group = Configs::dataManager->groupsRepo->CurrentGroup();
+    if (group == nullptr) return;
+    const int previous = selectedSelectorId;
+    ui->selectorGroupList->blockSignals(true);
+    ui->selectorGroupList->clear();
+    QList<int> selectorIds;
+    for (const int id : group->profiles) {
+        const auto profile = Configs::dataManager->profilesRepo->GetProfile(id);
+        if (profile == nullptr || profile->type != "selector") continue;
+        selectorIds.append(id);
+        auto *item = new QListWidgetItem(profile->name, ui->selectorGroupList);
+        item->setData(Qt::UserRole, id);
+        item->setToolTip(tr("Select a member on the right to change this group's default node."));
+    }
+    int row = selectorIds.indexOf(previous);
+    if (row < 0 && !selectorIds.isEmpty()) row = 0;
+    if (row >= 0) {
+        ui->selectorGroupList->setCurrentRow(row);
+        selectedSelectorId = selectorIds[row];
+    } else {
+        selectedSelectorId = -1;
+    }
+    ui->selectorGroupList->blockSignals(false);
+    show_selector_members(selectedSelectorId);
+}
+
+void MainWindow::show_selector_members(int selectorId)
+{
+    if (ui->selectorMemberList == nullptr) return;
+    ui->selectorMemberList->clear();
+    const auto selectorProfile = Configs::dataManager->profilesRepo->GetProfile(selectorId);
+    if (selectorProfile == nullptr || selectorProfile->type != "selector") return;
+    const auto selector = selectorProfile->Selector();
+    if (selector == nullptr) return;
+    for (const int memberId : selector->members) {
+        const auto member = Configs::dataManager->profilesRepo->GetProfile(memberId);
+        if (member == nullptr) continue;
+        auto *item = new QListWidgetItem(member->outbound->DisplayTypeAndName(), ui->selectorMemberList);
+        item->setData(Qt::UserRole, memberId);
+        item->setToolTip(memberId == selector->selectedID ? tr("Current node") : tr("Click to use this node for the group"));
+        if (memberId == selector->selectedID) {
+            QFont font = item->font();
+            font.setBold(true);
+            item->setFont(font);
+            item->setText(tr("✓ %1").arg(item->text()));
+            ui->selectorMemberList->setCurrentItem(item);
+        }
+    }
 }

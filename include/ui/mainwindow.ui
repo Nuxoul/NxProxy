@@ -452,9 +452,56 @@ QToolButton::menu-indicator {
            </attribute>
           </widget>
          </item>
+         <item>
+          <widget class="QWidget" name="selectorPanel">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>150</height>
+            </size>
+           </property>
+           <layout class="QHBoxLayout" name="selectorPanelLayout">
+            <item>
+             <layout class="QVBoxLayout" name="selectorGroupsColumn">
+              <item>
+               <widget class="QLabel" name="selectorGroupsLabel">
+                <property name="text">
+                 <string>Strategy groups</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QListWidget" name="selectorGroupList">
+                <property name="minimumSize">
+                 <size>
+                  <width>180</width>
+                  <height>0</height>
+                 </size>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <layout class="QVBoxLayout" name="selectorMembersColumn">
+              <item>
+               <widget class="QLabel" name="selectorMembersLabel">
+                <property name="text">
+                 <string>Members — click to use</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QListWidget" name="selectorMemberList"/>
+              </item>
+             </layout>
+            </item>
+           </layout>
+          </widget>
+         </item>
         </layout>
        </widget>
-      </widget>
+       </widget>
       <widget class="QWidget" name="aaaaaaaaaaaaaaaaaa">
        <layout class="QVBoxLayout" name="aaaaaaaaaaaa" stretch="0">
         <item>

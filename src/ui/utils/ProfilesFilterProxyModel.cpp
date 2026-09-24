@@ -49,13 +49,13 @@ bool ProfilesFilterProxyModel::portMatches(int port) const {
 }
 
 bool ProfilesFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex &) const {
-    if (!hasActiveFilter()) return true;
-
     auto *model = profilesModel();
     if (!model) return true;
+    const auto *key = model->filterKeyAt(sourceRow);
+    if (key != nullptr && key->type == "selector") return false;
+    if (!hasActiveFilter()) return true;
 
     // A profile that failed to load stays visible rather than becoming unreachable.
-    const auto *key = model->filterKeyAt(sourceRow);
     if (!key) return true;
 
     if (!m_address.isEmpty()) {

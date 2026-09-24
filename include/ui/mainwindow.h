@@ -299,6 +299,7 @@ private:
     QString nameFilterString;
     QString typeFilterString;
     QString countryFilterString;
+    int selectedSelectorId = -1;
 
     QTimer *m_filterRefreshDebounce = nullptr;
 
@@ -341,6 +342,8 @@ private:
     void setLogHighlighter(bool darkMode);
 
     void applyProfileFilters();
+    void refresh_selector_panel();
+    void show_selector_members(int selectorId);
 
     QList<int> get_now_selected_list();
     void refresh_startstop_button();
