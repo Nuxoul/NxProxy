@@ -6,7 +6,7 @@
 namespace Configs {
     // A named manual proxy group. Members are profile IDs in the owning group;
     // the routing generator resolves them to sing-box outbound tags.
-    class selector : public outbound {
+    class selectorOutbound : public outbound {
     public:
         QList<int> members;
         int selectedID = -1;

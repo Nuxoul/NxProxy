@@ -1315,9 +1315,11 @@ namespace Configs {
                     return;
                 }
                 // A selector resolves to a different member over time; a chain hop has to stay put.
-                if (ent->type == "autoselector")
+                if (ent->type == "autoselector" || ent->type == "selector")
                 {
-                    error = "An auto selector cannot be used as a hop; it is not a fixed server";
+                    error = ent->type == "autoselector"
+                                ? "An auto selector cannot be used as a hop; it is not a fixed server"
+                                : "A selector cannot be used as a hop; route to the selector directly";
                     return;
                 }
                 if (ent->outbound != nullptr && ent->outbound->IsExtraCore()) {
@@ -1368,14 +1370,14 @@ namespace Configs {
             for (int idx = 0; idx < ents.size(); idx++)
             {
                 auto tag = hopTag(opts.prefix, opts.startSuffix + idx);
-                if (idx == 0 && !opts.explicitTag.isEmpty()) tag = opts.explicitTag;
                 QString nextTag;
-                if (idx < ents.size() - 1) nextTag = hopTag(opts.prefix, opts.startSuffix + idx + 1);
-                if (opts.includeProxy && idx == 0) tag = tags::proxy;
-                // idx 0 is warp under the tag "proxy", so idx 1 takes "warp-bypass" for rules to name.
+                if (idx < ents.size() - 1)
+                    nextTag = hopTag(opts.prefix, opts.startSuffix + idx + 1);
+                if (opts.includeProxy && idx == 0 && opts.explicitTag.isEmpty()) tag = tags::proxy;
                 if (opts.warpWrap && idx == 1) tag = tags::warpBypass;
-                if (opts.markIngress && idx == 0) ctx.singIngressTags << tag;
+                if (idx == 0 && !opts.explicitTag.isEmpty()) tag = opts.explicitTag;
                 const auto& ent = ents[idx];
+                if (opts.markIngress && idx == 0) ctx.singIngressTags << tag;
                 // Only the head hop (and warp's wrapped outbound) gets a tag rules can name.
                 const bool addressableHop = idx == 0 || (opts.warpWrap && idx == 1) || opts.addressableTags.contains(tag);
                 if (addressableHop && (ent->type == "openvpn" || ent->type == "openconnect")) {
@@ -1472,6 +1474,7 @@ namespace Configs {
             bool warpWrap = false;
             bool auxiliary = false;
             QSet<QString> addressableTags;
+            QString explicitTag;
         };
 
         QString buildOutboundChain(BuildContext &ctx, const ChainBuildRequest &req)
@@ -1574,6 +1577,7 @@ namespace Configs {
                 .warpWrap = req.warpWrap,
                 .auxiliary = req.auxiliary,
                 .addressableTags = req.addressableTags,
+                .explicitTag = req.explicitTag,
             };
             const int tailingStartSuffix = req.startSuffix + static_cast<int>(initialSingEnts.size());
             if (!initialSingEnts.isEmpty()) {

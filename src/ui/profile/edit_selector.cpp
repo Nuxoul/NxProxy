@@ -59,7 +59,7 @@ EditSelector::EditSelector(QWidget* parent) : QWidget(parent) {
 }
 
 void EditSelector::refreshCandidates() {
-    const int previous = candidates->currentData().toInt(-1);
+    const int previous = candidates->currentData().isValid() ? candidates->currentData().toInt() : -1;
     QSet<int> selected;
     for (int i = 0; i < members->count(); ++i) selected.insert(members->item(i)->data(Qt::UserRole).toInt());
 
@@ -83,7 +83,7 @@ void EditSelector::refreshCandidates() {
 }
 
 void EditSelector::refreshDefaultMember() {
-    const int previous = defaultMember->currentData().toInt(-1);
+    const int previous = defaultMember->currentData().isValid() ? defaultMember->currentData().toInt() : -1;
     defaultMember->clear();
     for (int i = 0; i < members->count(); ++i)
         defaultMember->addItem(members->item(i)->text(), members->item(i)->data(Qt::UserRole));
@@ -115,7 +115,7 @@ bool EditSelector::onEnd() {
     selector->members.clear();
     QSet<int> unique;
     for (int i = 0; i < members->count(); ++i) {
-        const int id = members->item(i)->data(Qt::UserRole).toInt(-1);
+        const int id = members->item(i)->data(Qt::UserRole).isValid() ? members->item(i)->data(Qt::UserRole).toInt() : -1;
         const auto member = Configs::dataManager->profilesRepo->GetProfile(id);
         if (id < 0 || member == nullptr || member->gid != profile->gid || id == profile->id || unique.contains(id)) continue;
         unique.insert(id);
@@ -125,7 +125,7 @@ bool EditSelector::onEnd() {
         QMessageBox::warning(this, tr("Selector"), tr("Add at least one valid member profile."));
         return false;
     }
-    const int selected = defaultMember->currentData().toInt(-1);
+    const int selected = defaultMember->currentData().isValid() ? defaultMember->currentData().toInt() : -1;
     selector->selectedID = selector->members.contains(selected) ? selected : selector->members.first();
     return true;
 }

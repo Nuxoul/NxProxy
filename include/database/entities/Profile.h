@@ -174,8 +174,8 @@ namespace Configs {
             return dynamic_cast<Configs::autoSelector *>(outbound.get());
         };
 
-        [[nodiscard]] Configs::selector *Selector() const {
-            return dynamic_cast<Configs::selector *>(outbound.get());
+        [[nodiscard]] Configs::selectorOutbound *Selector() const {
+            return dynamic_cast<Configs::selectorOutbound *>(outbound.get());
         };
 
         [[nodiscard]] Configs::direct *Direct() const {

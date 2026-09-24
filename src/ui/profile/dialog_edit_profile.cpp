@@ -818,7 +818,7 @@ bool DialogEditProfile::validateHeaders() {
 bool DialogEditProfile::onEnd() {
     if (!innerEditor->onEnd()) {
         return false;
-
+    }
     if (ent->type == "selector") {
         const auto selector = ent->Selector();
         if (selector == nullptr || selector->members.isEmpty()) {

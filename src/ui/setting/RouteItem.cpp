@@ -92,10 +92,10 @@ RouteItem::RouteItem(QWidget *parent, const std::shared_ptr<Configs::RouteProfil
 
     outbounds.clear();
     outboundMap.clear();
-    const QList<QPair<QString, int>> builtinOutbounds = {
+    const QList<QPair<QString, int>> ruleBuiltinOutbounds = {
         {"proxy", -1}, {"direct", -2}, {"block", -3}, {"warp-bypass", Configs::warpBypassID}
     };
-    for (const auto& [name, id] : builtinOutbounds) {
+    for (const auto& [name, id] : ruleBuiltinOutbounds) {
         outboundMap[static_cast<int>(outbounds.size())] = id;
         outbounds << name;
     }
@@ -657,7 +657,7 @@ void RouteItem::accept() {
         return;
     }
 
-    chain->defaultOutboundID = ui->def_out->currentData().toInt(-1);
+    chain->defaultOutboundID = ui->def_out->currentData().isValid() ? ui->def_out->currentData().toInt() : -1;
 
     if (missingEndpoints > 0) {
         MessageBoxInfo(tr("Endpoints"),

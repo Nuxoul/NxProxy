@@ -188,7 +188,7 @@ private slots:
     void on_menu_otp_manager_triggered();
 
     void on_menu_hotkey_settings_triggered();
-
+    void on_menu_add_from_input_triggered();
     void on_menu_add_selector_triggered();
 
     void on_menu_add_from_clipboard_triggered();
