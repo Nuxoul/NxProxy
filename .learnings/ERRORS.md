@@ -239,3 +239,69 @@ After any `.cpp`-only change, force the target: `ninja -C build-local -t clean T
 - Related Files: src/ui/mainWindow/mainwindow_setup.cpp, build-local/build.ninja
 
 ---
+## [ERR-20260928-005] stale-line-range-clobber
+
+**Priority**: high
+**Status**: fixed
+**Area**: edit-protocol
+
+### Summary
+Editing the same region twice with a line range that was read before the first edit deleted the
+tail of my own replacement and left a stray `.arg(...)` line behind, breaking the build.
+
+### Error
+```text
+src/stats/traffic/TrafficLooper.cpp(183): error C2065: "g": undeclared identifier
+```
+The reported line was ~60 lines below the damage: the stray line ended the statement early, so
+everything that followed fell out of scope.
+
+### Context
+- First edit replaced line 120 (1 line) with a 5-line block, so lines 121+ shifted down by 4.
+- Second edit reused the *old* range 120..124, which then covered only the first 5 lines of that
+  block and left its 5th line orphaned in the file.
+- The damage was committed and pushed before the first build, because the push was requested
+  before verification.
+
+### Suggested Fix
+After any edit that changes a region's line count, re-read the region (or use the tag from the
+successful edit) before touching it again. Build before pushing: a push is not a checkpoint if the
+tree does not compile.
+
+### Metadata
+- Reproducible: yes
+- Related Files: src/stats/traffic/TrafficLooper.cpp
+
+---
+
+## [ERR-20260928-006] persisted-column-widths-override-defaults
+
+**Priority**: medium
+**Status**: fixed
+**Area**: ui
+
+### Summary
+New default table column widths never reached existing databases, so the 267px dead strip the
+change was meant to remove was still on screen.
+
+### Error
+```text
+pixel scan: header sections end at x=791, blank to x=1058 (267px) after the change built clean
+```
+
+### Context
+- `MainWindow::refresh_proxy_list_column_size()` applies the new stretch/fixed modes only when
+  `group->column_width` is empty. An older release had already persisted 129/174/151/289 for this
+  group, so the `else` branch restored exactly the old layout on every refresh.
+- A code change can therefore be present, built, and still invisible on a real profile.
+
+### Suggested Fix
+Keep respecting a stored layout, but close the gap it leaves: sum the sections and hand the
+remainder to the node name column. Verify column changes against a database that has history, not
+only a fresh one.
+
+### Metadata
+- Reproducible: yes
+- Related Files: src/ui/mainWindow/mainwindow_view.cpp, .learnings/ui-modernize-2.md
+
+---

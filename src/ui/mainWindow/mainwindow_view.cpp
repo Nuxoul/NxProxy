@@ -198,7 +198,8 @@ void MainWindow::refresh_status(const QString &traffic_update) {
         // The window title stays short: the old bracket chain ran past 900px and slid under the
         // system buttons. Everything it used to carry is still in the tray tooltip below.
         if (!isTray) {
-            QString title = QString("%1 %2").arg(software_name, QString(NKR_VERSION));
+            // trimmed() drops the trailing gap when the version macro is empty in a local build.
+            QString title = QString("%1 %2").arg(software_name, QString(NKR_VERSION)).trimmed();
             if (!activeRouteName.isEmpty()) title += QString(" · %1").arg(activeRouteName);
             if (running == nullptr) title += QString(" (%1)").arg(tr("Stopped"));
             return title;
@@ -342,6 +343,15 @@ void MainWindow::refresh_proxy_list_column_size() {
                 hHeader->resizeSection(i, group->column_width.at(i));
             }
             ui->profilesTableView->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        }
+        // A stored layout can be narrower than the viewport (an older release wrote one), which left
+        // a dead strip past the last section: hand the remainder to the node name column.
+        int usedWidth = 0;
+        for (int i = 0; i < columnCount; i++) usedWidth += hHeader->sectionSize(i);
+        const int freeWidth = ui->profilesTableView->viewport()->width() - usedWidth;
+        if (freeWidth > 8) {
+            hHeader->resizeSection(ProfilesTableModel::ColName,
+                                   hHeader->sectionSize(ProfilesTableModel::ColName) + freeWidth);
         }
         hHeader->adjustPositions();
         hHeader->blockSignals(false);
@@ -523,10 +533,15 @@ void MainWindow::refresh_selector_panel()
     }
 
     // Rows doubled in height once they gained a second line, so the old 180px cap started clipping
-    // the fifth group: size the panel to its content instead, up to eight groups before scrolling.
+    // the fifth group. The panel now takes what its content needs, but never more than half the
+    // page: the member table below is the workspace, and an eight-row panel left it one row tall.
     if (!selectorIds.isEmpty()) {
         constexpr int rowHeight = 46;
-        ui->selectorGroupList->setFixedHeight(qBound(96, selectorIds.size() * (rowHeight + 1) + 8, 376));
+        int cap = 290;
+        if (const QWidget *page = ui->selectorGroupList->parentWidget()) {
+            cap = qMax(150, (page->height() - 96) / 2);
+        }
+        ui->selectorGroupList->setFixedHeight(qBound(96, selectorIds.size() * (rowHeight + 1) + 8, cap));
     }
 
     const int row = selectorIds.indexOf(previous) >= 0 ? selectorIds.indexOf(previous) : (selectorIds.isEmpty() ? -1 : 0);
