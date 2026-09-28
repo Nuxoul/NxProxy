@@ -179,6 +179,10 @@ namespace Configs {
         QString remote_dns = "https://8.8.8.8/dns-query";
         bool remote_dns_disable_ipv6 = false;
         QString direct_dns = "localhost";
+        // WebRTC/STUN is UDP: a system proxy never carries it, and a domestic STUN target matches the
+        // CN-direct rules, so the real address leaks. 0 = follow rules, 1 = route through the proxy
+        // (the route's own default), 2 = reject outright.
+        int stun_udp_policy = 1;
         bool direct_dns_disable_ipv6 = false;
         int dns_cache_capacity = 65536;
         bool dns_disable_cache = false;

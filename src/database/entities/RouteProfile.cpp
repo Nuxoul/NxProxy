@@ -178,6 +178,9 @@ namespace Configs {
         remoteURL = other.remoteURL;
         autoUpdate = other.autoUpdate;
         remoteLastUpdate = other.remoteLastUpdate;
+        managedBySubscription = other.managedBySubscription;
+        managedGroupID = other.managedGroupID;
+        managedSourceName = other.managedSourceName;
         endpointProfileIDs = other.endpointProfileIDs;
         innerHopEndpointIDs = other.innerHopEndpointIDs;
     }
@@ -676,6 +679,7 @@ namespace Configs {
             *res = CollectRawOutboundIds(QString2QJsonObject(rawRoute));
             return res;
         }
+        if (!res->contains(defaultOutboundID)) res->push_back(defaultOutboundID);
         for (const auto& item: Rules) {
             // Endpoint placeholders use endpointProfileIDs; normal rules reference route outbounds by profile ID.
             if (item->type == endpointPreferredBy) continue;

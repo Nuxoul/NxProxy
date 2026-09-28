@@ -214,6 +214,7 @@ static ThemeTokens resolveTokens(const QPalette &pal) {
     t.tag     = separate(QColor(0xFB, 0x72, 0x99), t.surface, 4.0);
     t.danger  = separate(QColor(0xC6, 0x28, 0x28), t.surface, 4.5);
     t.success = separate(QColor(0x2E, 0x7D, 0x32), t.surface, 4.5);
+    t.warning = separate(QColor(0xE0, 0x9B, 0x22), t.surface, 4.5);
     t.info    = separate(QColor(0x32, 0x99, 0xFF), t.surface, 4.0);
     return t;
 }
@@ -240,6 +241,65 @@ static QString overlayStyleSheet(const ThemeTokens &t) {
 
 static QColor paneBorder(const ThemeTokens &t) {
     return separate(blendToward(t.onSurface, t.surface, 0.32), t.surface, 1.9);
+}
+
+// Strategy panel, its hints and the bottom status row: the same tokens as everything else, so a
+// QStyleFactory theme picks these up without a second sheet.
+static QString strategyPanelStyleSheet(const ThemeTokens &t) {
+    const auto hex = [](const QColor &c) { return c.name(QColor::HexRgb); };
+    const QColor border = paneBorder(t);
+    // blendToward keeps `from`, so a low keep leaves a trace of the accent/ink over the surface.
+    const QColor hover = separate(blendToward(t.accent, t.surface, 0.18), t.surface, 1.06);
+    const QColor selected = separate(blendToward(t.accent, t.surface, 0.34), t.surface, 1.12);
+    const QColor chipFill = separate(blendToward(t.onSurface, t.surface, 0.10), t.surface, 1.06);
+    // Badges carry a tinted fill, so the text target is the fill and not the window behind it.
+    const QColor badgeGood = blendToward(t.success, t.surface, 0.20);
+    const QColor badgeWarn = blendToward(t.warning, t.surface, 0.20);
+    const QColor badgeBad  = blendToward(t.danger, t.surface, 0.20);
+    const QColor badgeInfo = blendToward(t.info, t.surface, 0.20);
+    QString sheet = QStringLiteral(
+        // The group in use is marked by a rail, not a full-width fill, so its name stays readable.
+        // Item padding is 0 because these rows are real item widgets: their own margins do the inset.
+        "#selectorGroupList { border: 1px solid %1; border-radius: 6px; padding: 2px; }\n"
+        "#selectorGroupList::item { padding: 0px; border-radius: 4px; }\n"
+        "#selectorGroupList::item:hover:!selected { background: %2; }\n"
+        "#selectorGroupList::item:selected { background: %3; border-left: 3px solid %4; }\n"
+        "#selectorGroupHint, #selectorMemberHint { color: %5; padding: 2px; }\n"
+        // Two lines per group: what it is, then the node it actually routes through.
+        "#selectorGroupName { color: %5; font-size: 11px; }\n"
+        "#selectorGroupCount { color: %5; font-size: 11px; }\n"
+        "#selectorNodeName { color: %6; font-size: 12px; }\n"
+        "#selectorLatencyBadge { font-size: 11px; border-radius: 4px; padding: 1px 6px; }\n"
+        "#selectorLatencyBadge[latencyClass=\"good\"] { color: %7; background: %11; }\n"
+        "#selectorLatencyBadge[latencyClass=\"warn\"] { color: %8; background: %12; }\n"
+        "#selectorLatencyBadge[latencyClass=\"bad\"] { color: %9; background: %13; }\n"
+        "#selectorLatencyBadge[latencyClass=\"info\"] { color: %10; background: %14; }\n"
+        "#selectorLatencyBadge[latencyClass=\"muted\"] { color: %5; background: transparent; }\n"
+        // One chip per figure: the row then reads as a status strip instead of loose text.
+        "#label_running, #label_inbound, #label_speed {\n"
+        "    background: %15;\n"
+        "    border: 1px solid %1;\n"
+        "    border-radius: 5px;\n"
+        "    padding: 3px 8px;\n"
+        "    margin-right: 6px;\n"
+        "}\n"
+    );
+    sheet = sheet.arg(hex(border))                                 // 1
+                 .arg(hex(hover))                                  // 2
+                 .arg(hex(selected))                               // 3
+                 .arg(hex(t.accent))                               // 4
+                 .arg(hex(t.muted))                                // 5
+                 .arg(hex(t.onSurface))                            // 6
+                 .arg(hex(separate(t.success, badgeGood, 4.5)))    // 7
+                 .arg(hex(separate(t.warning, badgeWarn, 4.5)))    // 8
+                 .arg(hex(separate(t.danger, badgeBad, 4.5)))      // 9
+                 .arg(hex(separate(t.info, badgeInfo, 4.5)))       // 10
+                 .arg(hex(badgeGood))                              // 11
+                 .arg(hex(badgeWarn))                              // 12
+                 .arg(hex(badgeBad))                               // 13
+                 .arg(hex(badgeInfo))                              // 14
+                 .arg(hex(chipFill));                              // 15
+    return sheet;
 }
 
 // windows11 insets the first tab, never opens the selected one into the pane (zero base overlap) and marks it with a 45% fill.
@@ -352,7 +412,7 @@ void ThemeManager::ApplyTheme(const QString &theme, bool force) {
     // After setStyle(), which reinstalls the style's palette. Setting the sheet last is also
     // what clears the render-rule cache; a bare setPalette() does not.
     tokens = resolveTokens(qApp->palette());
-    QString sheet = themeSheet + overlayStyleSheet(tokens);
+    QString sheet = themeSheet + overlayStyleSheet(tokens) + strategyPanelStyleSheet(tokens);
     if (windows11Tabs) sheet += windows11TabStyleSheet(qApp->palette(), tokens);
     if (macosPane) sheet += macPaneStyleSheet(tokens);
     qApp->setStyleSheet(sheet);

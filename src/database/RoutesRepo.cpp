@@ -25,6 +25,9 @@ namespace Configs {
                 remote_last_update INTEGER NOT NULL DEFAULT 0,
                 endpoint_profile_ids TEXT NOT NULL DEFAULT '[]',
                 inner_hop_endpoint_ids TEXT NOT NULL DEFAULT '[]',
+                managed_by_subscription INTEGER NOT NULL DEFAULT 0,
+                managed_group_id INTEGER NOT NULL DEFAULT -1,
+                managed_source_name TEXT NOT NULL DEFAULT '',
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
                 updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
             )
@@ -47,6 +50,12 @@ namespace Configs {
             db.exec("ALTER TABLE route_profiles ADD COLUMN endpoint_profile_ids TEXT NOT NULL DEFAULT '[]'");
         if (!routeProfilesColumnExists("inner_hop_endpoint_ids"))
             db.exec("ALTER TABLE route_profiles ADD COLUMN inner_hop_endpoint_ids TEXT NOT NULL DEFAULT '[]'");
+        if (!routeProfilesColumnExists("managed_by_subscription"))
+            db.exec("ALTER TABLE route_profiles ADD COLUMN managed_by_subscription INTEGER NOT NULL DEFAULT 0");
+        if (!routeProfilesColumnExists("managed_group_id"))
+            db.exec("ALTER TABLE route_profiles ADD COLUMN managed_group_id INTEGER NOT NULL DEFAULT -1");
+        if (!routeProfilesColumnExists("managed_source_name"))
+            db.exec("ALTER TABLE route_profiles ADD COLUMN managed_source_name TEXT NOT NULL DEFAULT ''");
 
         db.exec(R"(
             CREATE TABLE IF NOT EXISTS route_rules (
@@ -208,7 +217,6 @@ namespace Configs {
 
     QJsonObject RoutesRepo::routeProfileToJson(const RouteProfile* routeProfile) const {
         QJsonObject json;
-        
         json["id"] = routeProfile->id;
         json["name"] = routeProfile->name;
         json["defaultOutboundID"] = routeProfile->defaultOutboundID;
@@ -219,6 +227,9 @@ namespace Configs {
         json["remoteURL"] = routeProfile->remoteURL;
         json["autoUpdate"] = routeProfile->autoUpdate;
         json["remoteLastUpdate"] = routeProfile->remoteLastUpdate;
+        json["managedBySubscription"] = routeProfile->managedBySubscription;
+        json["managedGroupID"] = routeProfile->managedGroupID;
+        json["managedSourceName"] = routeProfile->managedSourceName;
 
         QJsonArray endpointsArray;
         for (const int endpointID : routeProfile->endpointProfileIDs) endpointsArray.append(endpointID);
@@ -229,17 +240,13 @@ namespace Configs {
         json["innerHopEndpointIDs"] = innerHopsArray;
 
         QJsonArray rulesArray;
-        for (const auto& rule : routeProfile->Rules) {
-            rulesArray.append(routeRuleToJson(rule.get()));
-        }
+        for (const auto &rule : routeProfile->Rules) rulesArray.append(routeRuleToJson(rule.get()));
         json["rules"] = rulesArray;
-        
         return json;
     }
 
     std::shared_ptr<RouteProfile> RoutesRepo::routeProfileFromJson(const QJsonObject& json) const {
         auto routeProfile = std::make_shared<RouteProfile>();
-        
         routeProfile->id = json["id"].toInt();
         routeProfile->name = json["name"].toString();
         routeProfile->defaultOutboundID = json["defaultOutboundID"].toInt();
@@ -250,23 +257,22 @@ namespace Configs {
         routeProfile->remoteURL = json["remoteURL"].toString();
         routeProfile->autoUpdate = json["autoUpdate"].toBool();
         routeProfile->remoteLastUpdate = static_cast<qint64>(json["remoteLastUpdate"].toDouble());
-        for (const auto& endpointValue : json["endpointProfileIDs"].toArray()) {
+        routeProfile->managedBySubscription = json["managedBySubscription"].toBool(false);
+        routeProfile->managedGroupID = json["managedGroupID"].toInt(-1);
+        routeProfile->managedSourceName = json["managedSourceName"].toString();
+
+        for (const auto &endpointValue : json["endpointProfileIDs"].toArray()) {
             if (endpointValue.isDouble()) routeProfile->endpointProfileIDs.append(endpointValue.toInt());
         }
-        for (const auto& endpointValue : json["innerHopEndpointIDs"].toArray()) {
+        for (const auto &endpointValue : json["innerHopEndpointIDs"].toArray()) {
             if (endpointValue.isDouble()) routeProfile->innerHopEndpointIDs.append(endpointValue.toInt());
         }
 
         if (json.contains("rules") && json["rules"].isArray()) {
-            QJsonArray rulesArray = json["rules"].toArray();
-            for (const auto& ruleValue : rulesArray) {
-                if (ruleValue.isObject()) {
-                    auto rule = routeRuleFromJson(ruleValue.toObject());
-                    routeProfile->Rules.append(rule);
-                }
+            for (const auto &ruleValue : json["rules"].toArray()) {
+                if (ruleValue.isObject()) routeProfile->Rules.append(routeRuleFromJson(ruleValue.toObject()));
             }
         }
-        
         return routeProfile;
     }
 
@@ -281,6 +287,7 @@ namespace Configs {
         }
     }
 
+
     void RoutesRepo::saveToDatabaseInTx(const RouteProfile* routeProfile, int id) const {
         QJsonArray endpointsArray;
         for (const int endpointID : routeProfile->endpointProfileIDs) endpointsArray.append(endpointID);
@@ -293,8 +300,8 @@ namespace Configs {
         db.execThrow(R"(
             INSERT INTO route_profiles (id, name, default_outbound_id, is_raw, raw_route, prevent_modifications,
                 is_remote, remote_url, auto_update, remote_last_update, endpoint_profile_ids,
-                inner_hop_endpoint_ids)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                inner_hop_endpoint_ids, managed_by_subscription, managed_group_id, managed_source_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name, default_outbound_id = excluded.default_outbound_id,
                 is_raw = excluded.is_raw, raw_route = excluded.raw_route,
@@ -303,6 +310,9 @@ namespace Configs {
                 auto_update = excluded.auto_update, remote_last_update = excluded.remote_last_update,
                 endpoint_profile_ids = excluded.endpoint_profile_ids,
                 inner_hop_endpoint_ids = excluded.inner_hop_endpoint_ids,
+                managed_by_subscription = excluded.managed_by_subscription,
+                managed_group_id = excluded.managed_group_id,
+                managed_source_name = excluded.managed_source_name,
                 updated_at = strftime('%s', 'now')
         )",
             id,
@@ -316,7 +326,10 @@ namespace Configs {
             routeProfile->autoUpdate ? 1 : 0,
             static_cast<long long>(routeProfile->remoteLastUpdate),
             endpointsJson.toStdString(),
-            innerHopsJson.toStdString()
+            innerHopsJson.toStdString(),
+            routeProfile->managedBySubscription ? 1 : 0,
+            routeProfile->managedGroupID,
+            routeProfile->managedSourceName.toStdString()
         );
 
         db.execThrow("DELETE FROM route_rules WHERE route_profile_id = ?", id);
@@ -477,6 +490,9 @@ namespace Configs {
         json["endpointProfileIDs"] = endpointsDoc.isArray() ? endpointsDoc.array() : QJsonArray();
         const auto innerHopsDoc = QJsonDocument::fromJson(QString::fromStdString(stmt.getColumn(11).getText()).toUtf8());
         json["innerHopEndpointIDs"] = innerHopsDoc.isArray() ? innerHopsDoc.array() : QJsonArray();
+        json["managedBySubscription"] = stmt.getColumn(12).getInt() != 0;
+        json["managedGroupID"] = stmt.getColumn(13).getInt();
+        json["managedSourceName"] = QString::fromStdString(stmt.getColumn(14).getText());
         json["rules"] = QJsonArray();
         return routeProfileFromJson(json);
     }
@@ -488,7 +504,7 @@ namespace Configs {
             if (i > 0) idList += ",";
             idList += QString::number(profileIds[i]);
         }
-        std::string sql =
+        const std::string sql =
             "SELECT route_profile_id, name, type, ip_version, network, protocol, "
             "inbound_json, domain_json, domain_suffix_json, domain_keyword_json, domain_regex_json, "
             "source_ip_cidr_json, source_ip_is_private, ip_cidr_json, ip_is_private, "
@@ -501,27 +517,21 @@ namespace Configs {
         auto rulesQuery = db.query(sql);
         if (!rulesQuery) return;
         while (rulesQuery->executeStep()) {
-            int profileId = rulesQuery->getColumn(0).getInt();
+            const int profileId = rulesQuery->getColumn(0).getInt();
             auto it = byId.find(profileId);
-            if (it != byId.end()) {
-                it->second->Rules.append(routeRuleFromJson(ruleJsonFromRow(*rulesQuery, 1)));
-            }
+            if (it != byId.end()) it->second->Rules.append(routeRuleFromJson(ruleJsonFromRow(*rulesQuery, 1)));
         }
     }
-
     std::shared_ptr<RouteProfile> RoutesRepo::loadFromDatabase(int id) const {
         auto profileQuery = db.query(R"(
             SELECT id, name, default_outbound_id, is_raw, raw_route, prevent_modifications,
                    is_remote, remote_url, auto_update, remote_last_update, endpoint_profile_ids,
-                   inner_hop_endpoint_ids
+                   inner_hop_endpoint_ids, managed_by_subscription, managed_group_id, managed_source_name
             FROM route_profiles WHERE id = ?
         )", id);
-        if (!profileQuery || !profileQuery->executeStep()) {
-            return nullptr;
-        }
-        
+        if (!profileQuery || !profileQuery->executeStep()) return nullptr;
+
         auto routeProfile = routeProfileFromProfileRow(*profileQuery);
-        
         auto rulesQuery = db.query(R"(
             SELECT name, type, ip_version, network, protocol,
                    inbound_json, domain_json, domain_suffix_json, domain_keyword_json, domain_regex_json,
@@ -534,11 +544,9 @@ namespace Configs {
             FROM route_rules WHERE route_profile_id = ? ORDER BY rule_order
         )", id);
         if (rulesQuery) {
-            while (rulesQuery->executeStep()) {
+            while (rulesQuery->executeStep())
                 routeProfile->Rules.append(routeRuleFromJson(ruleJsonFromRow(*rulesQuery, 0)));
-            }
         }
-        
         return routeProfile;
     }
 
@@ -624,12 +632,12 @@ namespace Configs {
         QList<int> idsInOrder;
         QSet<int> cachedProfiles;
 
-        auto profileQuery = db.query("SELECT id, name, default_outbound_id, is_raw, raw_route, prevent_modifications, is_remote, remote_url, auto_update, remote_last_update, endpoint_profile_ids, inner_hop_endpoint_ids FROM route_profiles ORDER BY id");
+        auto profileQuery = db.query("SELECT id, name, default_outbound_id, is_raw, raw_route, prevent_modifications, is_remote, remote_url, auto_update, remote_last_update, endpoint_profile_ids, inner_hop_endpoint_ids, managed_by_subscription, managed_group_id, managed_source_name FROM route_profiles ORDER BY id");
         if (!profileQuery) return routeProfiles;
 
         QMutexLocker locker(&mutex);
         while (profileQuery->executeStep()) {
-            int id = profileQuery->getColumn(0).getInt();
+            const int id = profileQuery->getColumn(0).getInt();
             std::shared_ptr<RouteProfile> profile;
             auto it = identityMap.find(id);
             if (it != identityMap.end()) {
@@ -648,20 +656,14 @@ namespace Configs {
         }
 
         if (byId.empty()) return routeProfiles;
-
         for (int off = 0; off < idsInOrder.size(); off += Configs::BATCH_LIMIT_READ) {
-            int end = std::min(off + Configs::BATCH_LIMIT_READ, static_cast<int>(idsInOrder.size()));
+            const int end = std::min(off + Configs::BATCH_LIMIT_READ, static_cast<int>(idsInOrder.size()));
             QList<int> chunk;
-            for (int i = off; i < end; ++i) {
+            for (int i = off; i < end; ++i)
                 if (!cachedProfiles.contains(idsInOrder[i])) chunk.append(idsInOrder[i]);
-            }
-            if (chunk.isEmpty()) continue;
-            loadRulesForProfileIdsChunk(chunk, byId);
+            if (!chunk.isEmpty()) loadRulesForProfileIdsChunk(chunk, byId);
         }
-        
-        for (int id : idsInOrder) {
-            routeProfiles.append(byId[id]);
-        }
+        for (const int id : idsInOrder) routeProfiles.append(byId[id]);
         return routeProfiles;
     }
 

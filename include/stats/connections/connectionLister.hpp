@@ -31,14 +31,19 @@ namespace Stats
     // Unflipped sorts put the biggest number first but text A→Z, so `ascending` alone does not say which way rows run.
     bool SortIsDescending(ConnectionSort sort, bool ascending);
 
+    // Maps generated core outbound tags to user-facing strategy group/node labels.
+    void SetOutboundDisplayNames(const QMap<QString, QString> &tagToDisplay);
+    QString OutboundDisplayName(const QString &tag);
+
     class ConnectionMetadata
     {
-        public:
+    public:
         QString id;
         long long createdAtMs;
         long long upload;
         long long download;
         QString outbound;
+        QString outboundDisplay; // resolved strategy group/node label; falls back to outbound when unknown
         QString network;
         QString dest;
         QString protocol;

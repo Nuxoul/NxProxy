@@ -146,7 +146,8 @@ public:
 
     void RestartCore();
 
-    // Whole poll snapshot in the lister's order, never a delta. UI thread only.
+    // Re-sort the active group after a test, but only when the user selected test-result sorting.
+    void resortCurrentGroupAfterTest(int groupID);
     void UpdateConnectionList(const QList<Stats::ConnectionMetadata>& connections);
 
     void UpdateDataView(bool force = false);
@@ -266,9 +267,11 @@ private:
     bool m_profileDisconnecting = false;
     bool m_xrayGeoAssetBusy = false;
     bool m_ruleSetUpdateBusy = false;
-    QString traffic_update_cache;
     qint64 last_test_time = 0;
+    QString traffic_update_cache;
     int proxy_last_order = -1;
+    bool testResultSortActive = false;
+    bool testResultSortDescending = true;
     bool select_mode = false;
     QMutex mu_starting;
     QMutex mu_stopping;

@@ -73,6 +73,9 @@ namespace API {
         QString AutoSelectorAction(bool *rpcOK, const QString &tag, const QString &action,
                                    const QString &member = {}) const;
 
+        // Repicks a live strategy group; Throne keeps the choice, so no config reload is needed.
+        QString SelectOutbound(bool *rpcOK, const QString &groupTag, const QString &outboundTag) const;
+
         // Running instance only; a test box reports through Test itself (TestResp::vpn_status).
         [[nodiscard]] libcore::VPNStatusResponse QueryVPNStatus(bool *rpcOK, const QStringList &endpointTags,
                                                                 int timeoutMs = 0) const;

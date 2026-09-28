@@ -1,7 +1,7 @@
 #include "include/ui/mainWindow/TestRunner.h"
 
 #include "include/ui/mainwindow.h"
-
+#include <QSet>
 #include "include/api/RPC.h"
 #include "include/configs/generate.h"
 #include "include/database/GroupsRepo.h"
@@ -22,16 +22,30 @@ namespace {
     constexpr int kLatencyPollIntervalMs = 200;
     constexpr int kSpeedPollIntervalMs = 100;
 
-    QList<int> withoutAutoSelectors(const QList<int>& profileIDs) {
-        const auto selectors = Configs::dataManager->profilesRepo->GetProfileIdsByType("autoselector");
-        if (selectors.isEmpty()) return profileIDs;
-        const QSet<int> skip(selectors.begin(), selectors.end());
-        QList<int> filtered;
-        filtered.reserve(profileIDs.size());
-        for (int id : profileIDs) {
-            if (!skip.contains(id)) filtered << id;
-        }
-        return filtered;
+    QList<int> testProfileIDs(const QList<int>& requestedIDs) {
+        QList<int> result;
+        QSet<int> seen;
+        QSet<int> expanding;
+
+        std::function<void(int)> append = [&](int id) {
+            if (id < 0 || seen.contains(id)) return;
+            seen.insert(id);
+            const auto profile = Configs::dataManager->profilesRepo->GetProfile(id);
+            if (profile == nullptr || profile->type == "autoselector") return;
+            if (profile->type == "selector") {
+                if (expanding.contains(id)) return;
+                const auto selector = profile->Selector();
+                if (selector == nullptr) return;
+                expanding.insert(id);
+                for (const int memberID : selector->members) append(memberID);
+                expanding.remove(id);
+                return;
+            }
+            result.append(id);
+        };
+
+        for (const int id : requestedIDs) append(id);
+        return result;
     }
 
     bool isTestAborted(const QString& error) {
@@ -306,9 +320,11 @@ void TestRunner::runLatencyGroup(LatencyKind kind, const QList<int>& requestedID
     const auto panelKind = isUrl ? DataViewHtmlGenerator::LatencyTestPanelState::Kind::Url
                                  : DataViewHtmlGenerator::LatencyTestPanelState::Kind::Ip;
     // Must fire on every exit path — a caller may be blocked on it.
-    const auto finish = [onFinished] { if (onFinished) onFinished(); };
+    const auto finish = [onFinished] {
+        if (onFinished) runOnUiThread([onFinished] { onFinished(); });
+    };
 
-    const auto profileIDs = withoutAutoSelectors(requestedIDs);
+    const auto profileIDs = testProfileIDs(requestedIDs);
     if (profileIDs.isEmpty()) {
         finish();
         return;
@@ -399,22 +415,25 @@ void TestRunner::runLatencyGroup(LatencyKind kind, const QList<int>& requestedID
     });
 }
 
-void TestRunner::runSpeedTests(const QList<int>& requestedIDs, bool testCurrent)
+void TestRunner::runSpeedTests(const QList<int>& requestedIDs, bool testCurrent,
+                               const std::function<void()>& onFinished)
 {
     // A live-connection test stays valid for a selector: it measures whichever member carries traffic.
-    const auto profileIDs = testCurrent ? requestedIDs : withoutAutoSelectors(requestedIDs);
+    const auto profileIDs = testCurrent ? requestedIDs : testProfileIDs(requestedIDs);
     if (profileIDs.isEmpty() && !testCurrent) {
+        if (onFinished) onFinished();
         return;
     }
     if (!session_.tryLock()) {
         MessageBoxWarning(software_name, MainWindow::tr("The last test did not finish completely, please wait. If it persists, please restart the program."));
+        if (onFinished) onFinished();
         return;
     }
     sessionGen_.fetch_add(1);
 
     testingCurrent_.store(testCurrent);
 
-    runOnNewThread([this, profileIDs, testCurrent]() {
+    runOnNewThread([this, profileIDs, testCurrent, onFinished]() {
         stopRequested_.store(false);
         { QMutexLocker lk(&creditMu_); credited_.clear(); }
         if (!testCurrent)
@@ -468,6 +487,7 @@ void TestRunner::runSpeedTests(const QList<int>& requestedIDs, bool testCurrent)
         runOnUiThread([=,this]{
             mw_->refresh_proxy_list(profileIDs);
             MW_show_log(MainWindow::tr("Speedtest finished!"));
+            if (onFinished) onFinished();
         });
     });
 }

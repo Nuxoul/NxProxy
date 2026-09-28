@@ -1,6 +1,7 @@
 #pragma once
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QMap>
 #include <QSet>
 
 #include "include/database/entities/Profile.h"
@@ -45,6 +46,11 @@ namespace Configs
         QList<AutoSelectorBuildInfo> autoSelectors;
         // Endpoint hop tag -> profile id, so a live status can be named after its profile.
         QMap<QString, int> vpnEndpointProfiles;
+        // Runtime outbound tag -> readable strategy group/node label for connection views.
+        QMap<QString, QString> outboundDisplayNames;
+        // Strategy group profile id -> member profile id -> the member's tag in the running config,
+        // so a click can repick the group through the core instead of reloading the config.
+        QMap<int, QMap<int, QString>> selectorMemberTags;
         // Every profile the config was built from, chain hops and route members included.
         QSet<int> involvedProfiles;
     };

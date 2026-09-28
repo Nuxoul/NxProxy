@@ -331,7 +331,19 @@ void MainWindow::profile_start(int _id) {
 
         Configs::dataManager->settingsRepo->UpdateStartedId(ent->id);
         // Must land after the stop this start may have run first: that stop clears the map.
-        Stats::SetVpnEndpointProfiles(result->vpnEndpointProfiles);
+        Stats::SetOutboundDisplayNames(result->outboundDisplayNames);
+        Configs::SetSelectorMemberTags(result->selectorMemberTags);
+        // The core keeps its own copy of each group's pick (cache.db) and prefers it over the config's
+        // default, so push what the database holds: the UI stays the single source of truth.
+        for (auto selectorIt = result->selectorMemberTags.constBegin(); selectorIt != result->selectorMemberTags.constEnd(); ++selectorIt) {
+            const auto selectorProfile = Configs::dataManager->profilesRepo->GetProfile(selectorIt.key());
+            const auto selector = selectorProfile == nullptr ? nullptr : selectorProfile->Selector();
+            if (selector == nullptr) continue;
+            const auto memberTag = selectorIt->constFind(selector->selectedID);
+            if (memberTag == selectorIt->constEnd()) continue;
+            bool rpcOK = false;
+            defaultClient->SelectOutbound(&rpcOK, QString("selector-%1").arg(selectorIt.key()), *memberTag);
+        }
         Configs::SetRunningProfiles(result->involvedProfiles);
         running = ent;
         if (Configs::dataManager->settingsRepo->spmode_system_proxy) set_system_proxy(true);
@@ -518,7 +530,9 @@ void MainWindow::stop_vpn_challenge_poll() {
     if (m_vpnChallengeTimer != nullptr) m_vpnChallengeTimer->stop();
     reset_vpn_endpoint_tracking();
     Stats::SetVpnEndpointProfiles({});
+    Stats::SetOutboundDisplayNames({});
     Configs::ClearRunningProfiles();
+    Configs::ClearSelectorMemberTags();
     if (m_vpnAuthDialog != nullptr) m_vpnAuthDialog->close();
 }
 

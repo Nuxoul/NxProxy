@@ -13,6 +13,20 @@
 
 namespace Stats
 {
+    QMutex outboundDisplayMu;
+    QMap<QString, QString> outboundDisplayNames;
+
+    void SetOutboundDisplayNames(const QMap<QString, QString> &tagToDisplay)
+    {
+        QMutexLocker lk(&outboundDisplayMu);
+        outboundDisplayNames = tagToDisplay;
+    }
+
+    QString OutboundDisplayName(const QString &tag)
+    {
+        QMutexLocker lk(&outboundDisplayMu);
+        return outboundDisplayNames.value(tag, tag);
+    }
     // Guards out-of-band ForceUpdate() polls: a tiny byte delta over a tiny interval reads as a spike.
     static constexpr qint64 kSpeedSampleMinMs = 500;
 
@@ -78,7 +92,6 @@ namespace Stats
     static ConnectionMetadata metaFromProto(const libcore::ConnectionMetaData& conn, const QString& localLabel)
     {
         ConnectionMetadata c;
-        c.id = QString::fromStdString(conn.id.value());
         c.createdAtMs = conn.created_at.value();
         c.dest = QString::fromStdString(conn.dest.value());
         c.upload = conn.upload.value();
@@ -86,6 +99,7 @@ namespace Stats
         c.domain = QString::fromStdString(conn.domain.value());
         c.network = QString::fromStdString(conn.network.value());
         c.outbound = QString::fromStdString(conn.outbound.value());
+        c.outboundDisplay = OutboundDisplayName(c.outbound);
         c.process = QString::fromStdString(conn.process.value());
         c.processPath = QString::fromStdString(conn.process_path.value());
         c.protocol = QString::fromStdString(conn.protocol.value());

@@ -32,6 +32,9 @@ void MainWindow::show_group(int gid) {
     }
 
     if (Configs::dataManager->settingsRepo->current_group != gid) {
+        testResultSortActive = false;
+        testResultSortDescending = true;
+        proxy_last_order = -1;
         saveProfileFocusState();
         if (auto lastGroup = Configs::dataManager->groupsRepo->CurrentGroup()) {
             lastGroup->scroll_last_profile = ui->profilesTableView->firstVisibleRow();
@@ -43,8 +46,8 @@ void MainWindow::show_group(int gid) {
 
     ui->tabWidget->widget(groupId2TabIndex(gid))->layout()->addWidget(ui->profilesTableView);
 
+    refresh_selector_panel();
     refresh_proxy_list({}, true);
-
     // scroll_last_profile came from firstVisibleRow(), so it is a proxy row.
     const int rowCount = profilesFilterModel->rowCount();
     int targetRow = group->scroll_last_profile;
@@ -59,6 +62,24 @@ void MainWindow::show_group(int gid) {
     });
 
     Configs::dataManager->settingsRepo->refreshing_group = false;
+}
+
+void MainWindow::resortCurrentGroupAfterTest(int groupID)
+{
+    if (!testResultSortActive || Configs::dataManager->settingsRepo->current_group != groupID) return;
+    const auto group = Configs::dataManager->groupsRepo->GetGroup(groupID);
+    if (group == nullptr) return;
+    GroupSortAction action;
+    action.method = GroupSortMethod::ByTestResult;
+    action.descending = testResultSortDescending;
+    runOnNewThread([this, group, action] {
+        if (!group->SortProfiles(action)) return;
+        Configs::dataManager->groupsRepo->Save(group);
+        runOnUiThread([this, group] {
+            if (Configs::dataManager->settingsRepo->current_group == group->id)
+                refresh_proxy_list({}, true);
+        });
+    });
 }
 
 void MainWindow::refresh_groups() {
@@ -176,11 +197,12 @@ void MainWindow::show_group_tab_menu(const QPoint &p) {
         });
     }
     if (clickedGroup != nullptr) {
+        const int groupID = clickedGroup->id;
         connect(menu.addAction(tr("Url Test selected Group")), &QAction::triggered, this, [=,this]{
-            testRunner->runUrlTests(clickedGroup->Profiles());
+            testRunner->runUrlTests(clickedGroup->Profiles(), [this, groupID] { resortCurrentGroupAfterTest(groupID); });
         });
         connect(menu.addAction(tr("Speed Test selected Group")), &QAction::triggered, this, [=,this]{
-            testRunner->runSpeedTests(clickedGroup->Profiles());
+            testRunner->runSpeedTests(clickedGroup->Profiles(), false, [this, groupID] { resortCurrentGroupAfterTest(groupID); });
         });
     }
     menu.exec(ui->tabWidget->tabBar()->mapToGlobal(p));

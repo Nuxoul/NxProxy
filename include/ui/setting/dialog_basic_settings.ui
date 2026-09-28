@@ -171,6 +171,38 @@
           <item row="1" column="2">
            <widget class="QLineEdit" name="inbound_address"/>
           </item>
+          <item row="5" column="0">
+           <widget class="QLabel" name="stun_udp_policy_l">
+            <property name="toolTip">
+             <string>WebRTC/STUN 使用 UDP：系统代理不覆盖 UDP，而国内 STUN 目标常命中“CN 直连”规则，于是暴露真实 IP。此项会在 CN 直连规则之前接管 STUN/WebRTC 的 UDP 端口。</string>
+            </property>
+            <property name="text">
+             <string>WebRTC/STUN UDP</string>
+            </property>
+           </widget>
+          </item>
+          <item row="5" column="1" colspan="2">
+           <widget class="QComboBox" name="stun_udp_policy">
+            <property name="toolTip">
+             <string>Follow rules = 保持现状；Route through proxy = 走当前路由的默认出口；Reject = 直接拒绝（最彻底，但会禁用网页语音/视频通话）。</string>
+            </property>
+            <item>
+             <property name="text">
+              <string>Follow rules</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>Route through proxy</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>Reject</string>
+             </property>
+            </item>
+           </widget>
+          </item>
          </layout>
         </widget>
        </item>

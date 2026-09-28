@@ -1,6 +1,6 @@
 #include "include/ui/utils/ProfilesFilterProxyModel.h"
 #include "include/ui/utils/ProfilesTableModel.h"
-
+#include <QSet>
 namespace {
     const QString portPrefix = QStringLiteral("port=");
 }
@@ -32,6 +32,20 @@ int ProfilesFilterProxyModel::toSourceRow(int proxyRow) const {
     const QModelIndex idx = mapToSource(index(proxyRow, 0));
     return idx.isValid() ? idx.row() : -1;
 }
+void ProfilesFilterProxyModel::setAllowedProfileIds(const QList<int> &ids) {
+    const QSet<int> allowed(ids.begin(), ids.end());
+    if (m_allowedProfileIdsEnabled && m_allowedProfileIds == allowed) return;
+    m_allowedProfileIds = allowed;
+    m_allowedProfileIdsEnabled = true;
+    invalidateRowsFilter();
+}
+
+void ProfilesFilterProxyModel::clearAllowedProfileIds() {
+    if (!m_allowedProfileIdsEnabled && m_allowedProfileIds.isEmpty()) return;
+    m_allowedProfileIds.clear();
+    m_allowedProfileIdsEnabled = false;
+    invalidateRowsFilter();
+}
 
 int ProfilesFilterProxyModel::toProxyRow(int sourceRow) const {
     if (!sourceModel()) return -1;
@@ -51,6 +65,8 @@ bool ProfilesFilterProxyModel::portMatches(int port) const {
 bool ProfilesFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex &) const {
     auto *model = profilesModel();
     if (!model) return true;
+    const int profileId = model->data(model->index(sourceRow, 0), ProfilesTableModel::ProfileIdRole).toInt();
+    if (m_allowedProfileIdsEnabled && !m_allowedProfileIds.contains(profileId)) return false;
     const auto *key = model->filterKeyAt(sourceRow);
     if (key != nullptr && key->type == "selector") return false;
     if (!hasActiveFilter()) return true;

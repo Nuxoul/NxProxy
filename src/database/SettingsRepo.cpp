@@ -118,6 +118,7 @@ namespace Configs {
             {"url_test_timeout_ms",    &url_test_timeout_ms},
             {"xray_mux_concurrency",   &xray_mux_concurrency},
             {"current_route_id",       &current_route_id},
+            {"stun_udp_policy",        &stun_udp_policy},
             {"ruleset_mirror",         &ruleset_mirror},
             {"core_dns_in_port",       &core_dns_in_port},
             {"dns_cache_capacity", &dns_cache_capacity},

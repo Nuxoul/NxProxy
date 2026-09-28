@@ -37,6 +37,12 @@ namespace Configs {
         bool autoUpdate = false;
         qint64 remoteLastUpdate = 0; // epoch seconds
 
+        // Subscription-managed profiles are refreshed from a specific source group.
+        bool managedBySubscription = false;
+        int managedGroupID = -1;
+        QString managedSourceName;
+
+
         // Profile ids of openvpn/openconnect profiles run alongside this routing profile.
         QList<int> endpointProfileIDs;
 

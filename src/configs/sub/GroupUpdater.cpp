@@ -3,7 +3,7 @@
 #include "include/configs/sub/SubscriptionParser.hpp"
 #include "include/configs/sub/SubscriptionReconcile.hpp"
 #include "include/database/GroupsRepo.h"
-#include "include/database/ProfilesRepo.h"
+#include "include/database/RoutesRepo.h"
 #include "include/global/HTTPRequestHelper.hpp"
 #include "include/global/Utils.hpp"
 
@@ -11,8 +11,8 @@
 #include <QDateTime>
 #include <QJsonDocument>
 #include <QMutexLocker>
+#include <QRegularExpression>
 #include <QUrl>
-
 #include <algorithm>
 
 namespace Subscription {
@@ -89,7 +89,7 @@ namespace Subscription {
 
             QList<NewEntry> entries;
             QList<ProxyGroup> proxyGroups;
-
+            QStringList ruleLines;
         private:
             int gid;
             ContentIndex *index;
@@ -101,13 +101,13 @@ namespace Subscription {
             ParseSink parseSink;
             parseSink.profile = [&sink](std::shared_ptr<Configs::Profile> ent) { sink.add(std::move(ent)); };
             parseSink.proxyGroup = [&sink](const ProxyGroup &group) { sink.proxyGroups.append(group); };
+            parseSink.ruleLine = [&sink](const QString &line) { sink.ruleLines.append(line); };
             parseSink.log = [](const QString &line) { MW_show_log(line); };
             parseSink.warn = [](const QString &title, const QString &text) {
                 runOnUiThread([=] { MessageBoxWarning(title, text); });
             };
             return parseSink;
         }
-
         void applyProxyGroups(int gid, const QList<ProxyGroup> &groups) {
             if (groups.isEmpty()) return;
             const auto group = Configs::dataManager->groupsRepo->GetGroup(gid < 0 ? Configs::dataManager->settingsRepo->current_group : gid);
@@ -115,44 +115,188 @@ namespace Subscription {
             QHash<QString, int> profilesByName;
             for (const int id : group->profiles) {
                 const auto profile = Configs::dataManager->profilesRepo->GetProfile(id);
-                if (profile == nullptr || profile->type == "selector" || profile->type == "autoselector") continue;
-                if (!profile->outbound->name.isEmpty()) profilesByName.insert(profile->outbound->name, id);
+                if (profile == nullptr || profile->type == "selector" || profile->type == "autoselector" || profile->outbound == nullptr) continue;
+                const auto name = profile->outbound->name.trimmed();
+                if (!name.isEmpty()) profilesByName.insert(name.toLower(), id);
             }
             int changed = 0;
             for (const auto &remote : groups) {
-                if (remote.type.compare("select", Qt::CaseInsensitive) != 0 || remote.name.isEmpty()) continue;
+                if (remote.type.compare("select", Qt::CaseInsensitive) != 0 || remote.name.trimmed().isEmpty()) continue;
                 QList<int> members;
                 for (const auto &name : remote.proxies) {
-                    const int id = profilesByName.value(name, -1);
+                    const int id = profilesByName.value(name.trimmed().toLower(), -1);
                     if (id >= 0 && !members.contains(id)) members.append(id);
                 }
                 if (members.isEmpty()) continue;
+
                 std::shared_ptr<Configs::Profile> selectorProfile;
                 for (const int id : group->profiles) {
                     const auto candidate = Configs::dataManager->profilesRepo->GetProfile(id);
-                    if (candidate != nullptr && candidate->type == "selector" && candidate->Selector()->managedBySubscription && candidate->Selector()->remoteGroup == remote.name) {
+                    const auto candidateSelector = candidate == nullptr ? nullptr : candidate->Selector();
+                    if (candidate != nullptr && candidate->type == "selector" && candidateSelector != nullptr &&
+                        candidateSelector->managedBySubscription && candidateSelector->remoteGroup == remote.name) {
                         selectorProfile = candidate;
                         break;
                     }
                 }
                 if (selectorProfile == nullptr) {
                     selectorProfile = Configs::ProfilesRepo::NewProfile("selector");
+                    if (selectorProfile == nullptr || selectorProfile->outbound == nullptr) continue;
+                    selectorProfile->name = remote.name;
                     selectorProfile->outbound->name = remote.name;
-                    selectorProfile->Selector()->managedBySubscription = true;
-                    selectorProfile->Selector()->remoteGroup = remote.name;
+                    const auto createdSelector = selectorProfile->Selector();
+                    if (createdSelector == nullptr) continue;
+                    createdSelector->managedBySubscription = true;
+                    createdSelector->remoteGroup = remote.name;
                     if (!Configs::dataManager->profilesRepo->AddProfile(selectorProfile, group->id)) continue;
                 }
-                auto selector = selectorProfile->Selector();
+
+                const auto selector = selectorProfile->Selector();
+                if (selector == nullptr) continue;
                 const int oldSelected = selector->selectedID;
                 selector->members = members;
-                int selected = profilesByName.value(remote.selected, -1);
+                int selected = profilesByName.value(remote.selected.trimmed().toLower(), -1);
                 if (!members.contains(selected)) selected = members.contains(oldSelected) ? oldSelected : members.first();
                 selector->selectedID = selected;
                 selector->name = remote.name;
+                selectorProfile->name = remote.name;
+                if (selectorProfile->outbound != nullptr) selectorProfile->outbound->name = remote.name;
                 Configs::dataManager->profilesRepo->Save(selectorProfile);
                 ++changed;
             }
             if (changed > 0) MW_show_log(QObject::tr("Imported or updated %1 selector group(s).").arg(changed));
+        }
+
+        int routeOutboundId(const QString &action, const QHash<QString, int> &selectorIds) {
+            const QString key = action.trimmed();
+            if (key.compare("DIRECT", Qt::CaseInsensitive) == 0) return Configs::directID;
+            if (key.compare("REJECT", Qt::CaseInsensitive) == 0) return Configs::blockID;
+            if (key.compare("PROXY", Qt::CaseInsensitive) == 0) return Configs::proxyID;
+            if (key.compare("GLOBAL", Qt::CaseInsensitive) == 0) {
+                const auto selector = selectorIds.constFind(key.toLower());
+                return selector == selectorIds.constEnd() ? Configs::proxyID : selector.value();
+            }
+            const auto selector = selectorIds.constFind(key.toLower());
+            return selector == selectorIds.constEnd() ? Configs::proxyID : selector.value();
+        }
+
+        bool isRouteAction(const QString &candidate, const QHash<QString, int> &selectorIds) {
+            const QString key = candidate.trimmed();
+            return key.compare("DIRECT", Qt::CaseInsensitive) == 0 ||
+                   key.compare("REJECT", Qt::CaseInsensitive) == 0 ||
+                   key.compare("PROXY", Qt::CaseInsensitive) == 0 ||
+                   key.compare("GLOBAL", Qt::CaseInsensitive) == 0 ||
+                   selectorIds.contains(key.toLower());
+        }
+
+        QString ruleAction(const QStringList &fields, const QHash<QString, int> &selectorIds) {
+            for (int i = 2; i < fields.size(); ++i) {
+                if (isRouteAction(fields[i], selectorIds)) return fields[i].trimmed();
+            }
+            return fields.value(2).trimmed();
+        }
+
+        QString routeSetKey(const QString &kind, const QString &value) {
+            const QString key = value.trimmed().toLower();
+            if (kind == "GEOSITE") return "geosite-" + key;
+            if (kind == "GEOIP") return "geoip-" + key;
+            if (kind != "RULE-SET") return {};
+            if (key == "private-domain") return "geosite-private";
+            if (key == "private-ip") return "geoip-private";
+            if (key == "cn-domain") return "geosite-cn";
+            if (key == "cn-ip") return "geoip-cn";
+            if (key.startsWith("geosite-") || key.startsWith("geoip-")) return key;
+            return {};
+        }
+
+        QString wildcardToRegex(const QString &wildcard) {
+            QString result;
+            for (const auto ch : wildcard.trimmed()) {
+                if (ch == '*') result += ".*";
+                else if (ch == '?') result += '.';
+                else result += QRegularExpression::escape(QString(ch));
+            }
+            return '^' + result + '$';
+        }
+
+        std::shared_ptr<Configs::RouteProfile> managedRoute(int gid, const QString &sourceName) {
+            for (const auto &route : Configs::dataManager->routesRepo->GetAllRouteProfiles()) {
+                if (route != nullptr && route->managedBySubscription && route->managedGroupID == gid && route->managedSourceName == sourceName)
+                    return route;
+            }
+            auto route = Configs::RoutesRepo::NewRouteProfile();
+            route->name = QObject::tr("Mihomo - %1").arg(sourceName);
+            route->managedBySubscription = true;
+            route->managedGroupID = gid;
+            route->managedSourceName = sourceName;
+            if (!Configs::dataManager->routesRepo->AddRouteProfile(route)) return nullptr;
+            return route;
+        }
+
+        void applyProxyRules(int gid, const QStringList &lines) {
+            const int targetGroup = gid < 0 ? Configs::dataManager->settingsRepo->current_group : gid;
+            const auto group = Configs::dataManager->groupsRepo->GetGroup(targetGroup);
+            if (group == nullptr) return;
+            if (lines.isEmpty()) {
+                for (const auto &route : Configs::dataManager->routesRepo->GetAllRouteProfiles()) {
+                    if (route == nullptr || !route->managedBySubscription || route->managedGroupID != targetGroup || route->managedSourceName != group->name) continue;
+                    route->Rules.clear();
+                    route->defaultOutboundID = Configs::proxyID;
+                    Configs::dataManager->routesRepo->Save(route);
+                }
+                return;
+            }
+
+            QHash<QString, int> selectorIds;
+            for (const int id : group->profiles) {
+                const auto profile = Configs::dataManager->profilesRepo->GetProfile(id);
+                if (profile == nullptr || profile->type != "selector") continue;
+                const QString name = profile->name.trimmed();
+                if (!name.isEmpty()) selectorIds.insert(name.toLower(), id);
+            }
+
+            auto route = managedRoute(targetGroup, group->name);
+            if (route == nullptr) return;
+            route->Rules.clear();
+            route->defaultOutboundID = Configs::proxyID;
+            int order = 0;
+            for (const auto &raw : lines) {
+                const auto fields = raw.split(',', Qt::KeepEmptyParts);
+                if (fields.isEmpty()) continue;
+                const QString kind = fields.first().trimmed().toUpper();
+                if (kind == "MATCH" || kind == "FINAL") {
+                    if (fields.size() >= 2) route->defaultOutboundID = routeOutboundId(fields.last().trimmed(), selectorIds);
+                    continue;
+                }
+                if (fields.size() < 3) continue;
+
+                auto rule = std::make_shared<Configs::RouteRule>();
+                rule->name = QStringLiteral("mihomo-%1").arg(order++);
+                rule->outboundID = routeOutboundId(ruleAction(fields, selectorIds), selectorIds);
+                const QString value = fields[1].trimmed();
+                if (kind == "DOMAIN") rule->domain << value;
+                else if (kind == "DOMAIN-SUFFIX") rule->domain_suffix << value;
+                else if (kind == "DOMAIN-KEYWORD") rule->domain_keyword << value;
+                else if (kind == "DOMAIN-REGEX") rule->domain_regex << value;
+                else if (kind == "IP-CIDR" || kind == "IP-CIDR6") rule->ip_cidr << value;
+                else if (kind == "PROCESS-NAME") rule->process_name << value;
+                else if (kind == "PROCESS-NAME-WILDCARD") rule->process_path_regex << wildcardToRegex(value);
+                else if (kind == "PROCESS-PATH") rule->process_path << value;
+                else if (kind == "GEOSITE" || kind == "GEOIP" || kind == "RULE-SET") {
+                    const auto key = routeSetKey(kind, value);
+                    if (key.isEmpty()) {
+                        MW_show_log(QObject::tr("Skipped unsupported Mihomo rule-set: %1").arg(value));
+                        continue;
+                    }
+                    rule->rule_set << key;
+                } else continue;
+                route->Rules.append(rule);
+            }
+
+            Configs::dataManager->routesRepo->Save(route);
+            Configs::dataManager->settingsRepo->current_route_id = route->id;
+            Configs::dataManager->settingsRepo->Save();
+            MW_show_log(QObject::tr("Imported %1 routing rules into %2.").arg(route->Rules.size()).arg(route->name));
         }
         QString notice(const QStringList &names, const QString &prefix, const QString &action) {
             if (names.size() >= 1000) return QStringLiteral("%1 %2 %3\n").arg(prefix, action).arg(names.size());
@@ -229,31 +373,33 @@ namespace Subscription {
 
     void GroupUpdater::ImportUrl(const QString &url, const Finish &finish) {
         const auto content = url.trimmed();
+        const int targetGroup = Configs::dataManager->settingsRepo->current_group;
         enqueue({-1, false, [=, this] {
             QByteArray body;
             QString userInfo;
-            if (fetch(content, content, body, userInfo)) importDocuments(-1, {std::move(body)});
-            emit asyncUpdateCallback(-1);
+            if (fetch(content, content, body, userInfo)) importDocuments(targetGroup, {std::move(body)});
+            emit asyncUpdateCallback(targetGroup);
             if (finish != nullptr) finish();
         }});
     }
 
     void GroupUpdater::ImportText(const QString &text, int gid, const Finish &finish) {
         QByteArray body = text.toUtf8();
+        const int targetGroup = gid < 0 ? Configs::dataManager->settingsRepo->current_group : gid;
         enqueue({-1, false, [=, this]() mutable {
-            importDocuments(gid, {std::move(body)});
-            emit asyncUpdateCallback(gid);
+            importDocuments(targetGroup, {std::move(body)});
+            emit asyncUpdateCallback(targetGroup);
             if (finish != nullptr) finish();
         }});
     }
-
     void GroupUpdater::ImportBatch(const QStringList &payloads, const Finish &finish) {
         if (payloads.isEmpty()) return;
         QList<QByteArray> documents;
         for (const auto &payload : payloads) documents << payload.trimmed().toUtf8();
+        const int targetGroup = Configs::dataManager->settingsRepo->current_group;
         enqueue({-1, false, [=, this]() mutable {
-            importDocuments(-1, std::move(documents));
-            emit asyncUpdateCallback(-1);
+            importDocuments(targetGroup, std::move(documents));
+            emit asyncUpdateCallback(targetGroup);
             if (finish != nullptr) finish();
         }});
     }
@@ -316,7 +462,7 @@ namespace Subscription {
         for (auto &document : documents) ParseDocument(std::move(document), sinkFor(sink));
         sink.flush();
         applyProxyGroups(gid, sink.proxyGroups);
-
+        applyProxyRules(gid, sink.ruleLines);
         settings->imported_count = sink.entries.size();
         MW_dialog_message(MwMessage::SubscriptionFinished, {});
     }
@@ -391,7 +537,6 @@ namespace Subscription {
         MW_show_log(">>>>>>>> " + QObject::tr("Processing subscription data..."));
         ParseDocument(std::move(body), sinkFor(sink));
         sink.flush();
-        applyProxyGroups(gid, sink.proxyGroups);
 
         QString change_text;
         if (cleared) {
@@ -451,6 +596,8 @@ namespace Subscription {
             }
             if (plan.added.isEmpty() && plan.updates.isEmpty() && plan.deleted.isEmpty()) change_text = QObject::tr("Nothing");
         }
+        applyProxyGroups(gid, sink.proxyGroups);
+        applyProxyRules(gid, sink.ruleLines);
 
         MW_show_log("<<<<<<<< " + QObject::tr("Change of %1:").arg(group->name) + "\n" + change_text);
         if (showDiff && settings->sub_show_change_popup) {

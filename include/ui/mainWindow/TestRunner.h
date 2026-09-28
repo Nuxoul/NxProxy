@@ -32,7 +32,8 @@ public:
 
     void runIpTests(const QList<int>& profileIDs);
 
-    void runSpeedTests(const QList<int>& profileIDs, bool testCurrent = false);
+    void runSpeedTests(const QList<int>& profileIDs, bool testCurrent = false,
+                       const std::function<void()>& onFinished = {});
 
     void stop();
 

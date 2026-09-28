@@ -117,7 +117,12 @@ namespace Stats {
             runOnUiThread([=,this] {
                 auto m = GetMainWindow();
                 if (proxy != nullptr) {
-                    m->refresh_status(QObject::tr("Proxy: %1\nDirect: %2").arg(DisplaySpeed(proxy), DisplaySpeed(direct)));
+                    // Single line carrying both paths: the old two-line form made this chip taller
+                    // than the two beside it, so the three never shared a baseline.
+                    m->refresh_status(QString("%1 %2  %3 %4")
+                                          .arg(QObject::tr("Proxy:"), DisplaySpeed(proxy),
+                                               QObject::tr("Direct:"), DisplaySpeed(direct)));
+                                          .arg(DisplaySpeed(direct)));
                     m->update_traffic_graph(proxy->downlink_rate, proxy->uplink_rate, direct->downlink_rate, direct->uplink_rate);
                 }
                 QList<int> ids;

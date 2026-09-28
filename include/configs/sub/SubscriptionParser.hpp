@@ -20,6 +20,7 @@ namespace Subscription {
     struct ParseSink {
         std::function<void(std::shared_ptr<Configs::Profile>)> profile;
         std::function<void(const ProxyGroup &)> proxyGroup;
+        std::function<void(const QString &)> ruleLine;
         std::function<void(const QString &)> log;
         std::function<void(const QString &, const QString &)> warn;
     };

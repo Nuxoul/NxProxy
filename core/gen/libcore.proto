@@ -34,6 +34,8 @@ service LibcoreService {
   rpc QueryAutoSelectors(EmptyReq) returns (QueryAutoSelectorsResponse);
   rpc AutoSelectorAction(AutoSelectorActionRequest) returns (ErrorResp);
   //
+  rpc SelectOutbound(SelectOutboundRequest) returns (ErrorResp);
+  //
   rpc QueryVPNStatus(VPNStatusRequest) returns (VPNStatusResponse);
   rpc SubmitVPNChallenge(SubmitVPNChallengeRequest) returns (ErrorResp);
   rpc CancelVPNChallenge(SubmitVPNChallengeRequest) returns (ErrorResp);
@@ -429,6 +431,15 @@ message AutoSelectorActionRequest {
   // recheck = force a full sweep now; select = pin the group to `member`
   optional string action = 2 [default = ""];
   optional string member = 3 [default = ""];
+}
+
+// Manual (Clash-style) strategy group: switching it only tells the running box, so
+// the caller keeps the choice and no config reload is needed.
+message SelectOutboundRequest {
+  // The group outbound tag as it appears in the running config, e.g. selector-57.
+  optional string group_tag = 1 [default = ""];
+  // A member tag the group lists, e.g. route-86.
+  optional string outbound_tag = 2 [default = ""];
 }
 
 // Throne downloads the archive (proxy settings apply there); the core has the zip reader.

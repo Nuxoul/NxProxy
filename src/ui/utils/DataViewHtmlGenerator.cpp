@@ -175,26 +175,31 @@ QString DataViewHtmlGenerator::autoSelectorSectionHtml() {
 }
 
 QString DataViewHtmlGenerator::getProgressBar(long long current, long long total) {
-    qint64 count = 0;
+    const auto &tokens = themeManager()->tokens;
+    int percent = 0;
     if (total > 0) {
-        count = 10 * current / total;
+        percent = static_cast<int>(100 * current / total);
+        if (percent < 0) percent = 0;
+        if (percent > 100) percent = 100;
     }
-    QString progressText;
-    for (int i = 0; i < 10; i++) {
-        if (count--; count >= 0) {
-            progressText += "#";
-        } else {
-            progressText += "-";
-        }
-    }
-    return progressText;
+    // Qt's rich text has no width on an inline box, but it does lay tables out, so the fill rides a
+    // two-cell table: the split is the real percentage instead of a fixed ten-character ASCII gauge.
+    return QStringLiteral(
+               "<table width='160' height='6' cellspacing='0' cellpadding='0' style='margin:0 auto;'>"
+               "<tr><td width='%1%' style='background-color:%2;'></td>"
+               "<td width='%3%' style='background-color:%4;'></td></tr>"
+               "</table>")
+        .arg(percent)
+        .arg(tokens.accent.name())
+        .arg(100 - percent)
+        .arg(tokens.muted.name());
 }
 
 QString DataViewHtmlGenerator::downloadSectionHtml() {
     auto progressText = getProgressBar(download_.report.downloadedSize, download_.report.totalSize);
     const QString stat =
         ReadableSize(download_.report.downloadedSize) + "/" + ReadableSize(download_.report.totalSize);
-    return QString("<p style='text-align:center;margin:0;'>Downloading %1: %2 %3</p>")
+    return QString("<p style='text-align:center;margin:0;'>Downloading %1: %2</p>%3")
         .arg(download_.report.fileName, stat, progressText);
 }
 
@@ -218,9 +223,10 @@ QString DataViewHtmlGenerator::speedtestSectionHtml() {
         QString res;
         auto content = QString("Running Country Test");
         if (speedtest_.totalProfiles > 1) {
-            auto progress = getProgressBar(testProgress.load(), speedtest_.totalProfiles);
-            progress += QString(" ") + Int2String(100 * testProgress.load() / speedtest_.totalProfiles) + "%";
-            res = QString("<p style='text-align:center;margin:0;'>%1</p>").arg(progress);
+            // Same split as the latency panel: the numbers stay text, the bar keeps its own block.
+            auto bar = getProgressBar(testProgress.load(), speedtest_.totalProfiles);
+            auto progress = Int2String(100 * testProgress.load() / speedtest_.totalProfiles) + QStringLiteral("%");
+            res = QString("<p style='text-align:center;margin:0;'>%1</p>%2").arg(progress, bar);
             content += QString(" (%1 / %2)").arg(Int2String(testProgress.load()), Int2String(speedtest_.totalProfiles));
         }
         res += QString("<p style='text-align:center;margin:0;'>%1</p>").arg(content);
@@ -233,9 +239,10 @@ QString DataViewHtmlGenerator::latencyTestSectionHtml() {
     auto content =
         latencyTest_.kind == LatencyTestPanelState::Kind::Url ? QString("Running URL test") : QString("Running IP test");
     if (latencyTest_.totalProfiles > 1) {
-        auto progress = getProgressBar(testProgress.load(), latencyTest_.totalProfiles);
-        progress += QString(" ") + Int2String(100 * testProgress.load() / latencyTest_.totalProfiles) + "%";
-        res = QString("<p style='text-align:center;margin:0;'>%1</p>").arg(progress);
+        // The bar is a table, so it keeps its own block instead of being swallowed by the paragraph.
+        auto bar = getProgressBar(testProgress.load(), latencyTest_.totalProfiles);
+        auto progress = Int2String(100 * testProgress.load() / latencyTest_.totalProfiles) + QStringLiteral("%");
+        res = QString("<p style='text-align:center;margin:0;'>%1</p>%2").arg(progress, bar);
         content += QString(" (%1 / %2)").arg(Int2String(testProgress.load()), Int2String(latencyTest_.totalProfiles));
     }
     res += QString("<p style='text-align:center;margin:0;'>%1</p>").arg(content);

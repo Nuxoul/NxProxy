@@ -28,6 +28,7 @@
 #include "include/database/ProfilesRepo.h"
 #include "include/database/RoutesRepo.h"
 #include "include/global/Common.h"
+#include "include/global/RunningProfiles.hpp"
 
 #include "include/ui/utils/ProfilesTableFilterHeader.h"
 #include "include/ui/utils/ProfilesTableModel.h"
@@ -413,11 +414,60 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     ui->profilesTableView->setModel(profilesFilterModel);
     connect(ui->profilesTableView->selectionModel(), &QItemSelectionModel::selectionChanged, this,
             [this] { refresh_startstop_button(); });
-    refresh_selector_panel();
+    connect(ui->selectorGroupList, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem *current) {
+                show_selector_members(current == nullptr ? -1 : current->data(Qt::UserRole).toInt());
+            });
+    connect(ui->selectorGroupList, &QListWidget::itemClicked, this,
+            [this](QListWidgetItem *item) {
+                if (item != nullptr) show_selector_members(item->data(Qt::UserRole).toInt());
+            });
+    connect(ui->profilesTableView, &QAbstractItemView::clicked, this, [this](const QModelIndex &index) {
+        if (!index.isValid() || profilesTableModel == nullptr) return;
+        const auto currentItem = ui->selectorGroupList->currentItem();
+        const int currentSelectorId = currentItem == nullptr ? -1 : currentItem->data(Qt::UserRole).toInt();
+        if (currentSelectorId < 0) return;
+        selectedSelectorId = currentSelectorId;
+        const int memberId = index.data(ProfilesTableModel::ProfileIdRole).toInt();
+        const auto selectorProfile = Configs::dataManager->profilesRepo->GetProfile(currentSelectorId);
+        const auto selector = selectorProfile == nullptr ? nullptr : selectorProfile->Selector();
+        if (selector == nullptr || !selector->members.contains(memberId)) return;
+        if (selector->selectedID == memberId) return;
+        selector->selectedID = memberId;
+        if (Configs::dataManager->profilesRepo->Save(selectorProfile)) {
+            profilesTableModel->setSelectorSelectedProfileId(memberId);
+            refresh_selector_panel();
+            if (running == nullptr) return; // Nothing live to repick; the saved choice applies on the next start.
+            // A live strategy group repicks itself through the core, so a restart is only the fallback
+            // for a group the running config does not carry.
+            const int selectorID = currentSelectorId;
+            const QString groupName = selectorProfile->name;
+            const QString memberTag = Configs::SelectorMemberTag(selectorID, memberId);
+            if (memberTag.isEmpty()) {
+                MW_show_log(tr("Strategy group %1: member %2 is not in the running config, restart the core to apply it.")
+                                .arg(groupName)
+                                .arg(memberId));
+                noteRestartNeeded(tr("Strategy group %1").arg(groupName));
+                return;
+            }
+            runOnNewThread([=, this] {
+                bool rpcOK = false;
+                const QString error = API::defaultClient->SelectOutbound(
+                    &rpcOK, QString("selector-%1").arg(selectorID), memberTag);
+                if (rpcOK && error.isEmpty()) return;
+                runOnUiThread([=, this] {
+                    MW_show_log(tr("Failed to switch strategy group %1 in the running core: %2")
+                                    .arg(groupName, error.isEmpty() ? tr("the core rejected the member") : error));
+                    noteRestartNeeded(tr("Strategy group %1").arg(groupName));
+                });
+            });
+        }
+    });
+    // Strategy panel is refreshed when the group tab is shown; legacy selector rows are not touched during startup.
     ui->profilesTableView->rowsSwapped = [this](int row1, int row2)
     {
         // A drop position in a filtered list says nothing about the group's real order.
-        if (profilesFilterModel->hasActiveFilter()) return;
+        if (profilesFilterModel->hasActiveFilter() || selectedSelectorId >= 0) return;
         if (row1 == row2) return;
         auto group = Configs::dataManager->groupsRepo->CurrentGroup();
         group->EmplaceProfile(row1, row2);
@@ -448,6 +498,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             action.method = GroupSortMethod::ByTraffic;
         } else {
             return;
+        }
+        if (logicalIndex == ProfilesTableModel::ColTestResult) {
+            testResultSortActive = true;
+            testResultSortDescending = action.descending;
+        } else {
+            testResultSortActive = false;
         }
         runOnNewThread([=, this] {
             auto currGroup = Configs::dataManager->groupsRepo->CurrentGroup();
@@ -578,6 +634,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             int testSortBy = chosen->data().toInt();
             group->test_sort_by = static_cast<Configs::testBy>(testSortBy);
             Configs::dataManager->groupsRepo->Save(group);
+            testResultSortActive = true;
+            testResultSortDescending = true;
             GroupSortAction action;
             action.method = GroupSortMethod::ByTestResult;
             action.descending = true;
@@ -643,8 +701,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         }
     });
     ui->profilesTableView->verticalHeader()->setStretchLastSection(false);
-    ui->profilesTableView->verticalHeader()->setDefaultSectionSize(24);
+    ui->profilesTableView->verticalHeader()->setDefaultSectionSize(32);
     ui->profilesTableView->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    // Whole-row steps: pixel scrolling left a 9px slice of the next row showing after a wheel tick.
+    ui->profilesTableView->setVerticalScrollMode(QAbstractItemView::ScrollPerItem);
+    ui->selectorGroupList->setVerticalScrollMode(QAbstractItemView::ScrollPerItem);
+    // Only a floor: the filter row in this header grows the header further when it needs to.
+    ui->profilesTableView->horizontalHeader()->setMinimumHeight(30);
     ui->profilesTableView->setTabKeyNavigation(false);
     ui->profilesTableView->horizontalHeader()->setResizeContentsPrecision(0);
 
@@ -954,32 +1017,55 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             group->calculated_column_width[ProfilesTableModel::ColTestResult] = 0;
         refresh_proxy_list();
     });
+    auto testResultSortFinished = [this](int groupID) {
+        return [this, groupID] {
+            resortCurrentGroupAfterTest(groupID);
+            // A group's latency belongs to the node it routes through, so it has to follow the test run.
+            refresh_selector_panel();
+        };
+    };
     connect(ui->actionUrl_Test_Selected, &QAction::triggered, this, [=,this]() {
-        testRunner->runUrlTests(get_now_selected_list());
+        const auto group = Configs::dataManager->groupsRepo->CurrentGroup();
+        testRunner->runUrlTests(get_now_selected_list(), group == nullptr ? std::function<void()>{} : testResultSortFinished(group->id));
     });
+    // The strategy panel selection wins: the built-in action then measures the members on screen
+    // instead of every row in the tab, which repeats shared nodes and selector rows.
+    auto strategyGroupTargets = [this]() -> QList<int> {
+        if (const auto item = ui->selectorGroupList->currentItem(); item != nullptr) {
+            const int selectorID = item->data(Qt::UserRole).toInt();
+            const auto selectorProfile = Configs::dataManager->profilesRepo->GetProfile(selectorID);
+            if (selectorProfile != nullptr && selectorProfile->Selector() != nullptr)
+                return selectorProfile->Selector()->members;
+        }
+        return {};
+    };
     connect(ui->actionUrl_Test_Group, &QAction::triggered, this, [=,this]() {
-        testRunner->runUrlTests(Configs::dataManager->groupsRepo->CurrentGroup()->Profiles());
+        const auto group = Configs::dataManager->groupsRepo->CurrentGroup();
+        if (group == nullptr) return;
+        const auto targets = strategyGroupTargets();
+        testRunner->runUrlTests(targets.isEmpty() ? group->Profiles() : targets, testResultSortFinished(group->id));
     });
     connect(ui->actionSpeedtest_Current, &QAction::triggered, this, [=,this]()
     {
-        if (running != nullptr)
-        {
-            testRunner->runSpeedTests({}, true);
-        }
+        if (running != nullptr) testRunner->runSpeedTests({}, true);
     });
     connect(ui->actionSpeedtest_Selected, &QAction::triggered, this, [=,this]()
     {
-        testRunner->runSpeedTests(get_now_selected_list());
+        const auto group = Configs::dataManager->groupsRepo->CurrentGroup();
+        if (group != nullptr)
+            testRunner->runSpeedTests(get_now_selected_list(), false, testResultSortFinished(group->id));
     });
     connect(ui->actionSpeedtest_Group, &QAction::triggered, this, [=,this]()
     {
-        testRunner->runSpeedTests(Configs::dataManager->groupsRepo->CurrentGroup()->Profiles());
+        const auto group = Configs::dataManager->groupsRepo->CurrentGroup();
+        if (group != nullptr) testRunner->runSpeedTests(group->Profiles(), false, testResultSortFinished(group->id));
     });
     connect(ui->actionResolve_Selected_Out_IP, &QAction::triggered, this, [=,this]() {
         testRunner->runIpTests(get_now_selected_list());
     });
     connect(ui->actionResolve_Out_IP, &QAction::triggered, this, [=,this]() {
-        testRunner->runIpTests(Configs::dataManager->groupsRepo->CurrentGroup()->Profiles());
+        const auto group = Configs::dataManager->groupsRepo->CurrentGroup();
+        if (group != nullptr) testRunner->runIpTests(group->Profiles());
     });
     connect(ui->menu_stop_testing, &QAction::triggered, this, [=,this]() { testRunner->stop(); });
     auto set_selected_or_group = [=,this](int mode) {

@@ -47,6 +47,9 @@ public:
 
     void refreshProfileId(int profileId);
 
+    void setSelectorSelectedProfileId(int profileId);
+    void clearSelectorSelectedProfileId();
+
     void emplaceProfiles(int row1, int row2);
 
     int indexOfProfile(int id);
@@ -67,6 +70,8 @@ private:
     mutable QHash<int, std::shared_ptr<Configs::Profile>> m_cache;
     mutable QList<int> m_lruOrder;
     int m_cacheSize = 100;
+    int m_selectorSelectedProfileId = -1;
+    bool m_selectorSelectionEnabled = false;
 
     mutable QHash<int, FilterKey> m_filterKeys;
     mutable bool m_filterIndexBuilt = false;

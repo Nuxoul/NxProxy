@@ -202,7 +202,7 @@ namespace Configs {
             QJsonArray outbounds;
             QJsonArray endpoints;
             QJsonArray xrayOutbounds;
-            // tag -> "openvpn" | "openconnect".
+            QMap<QString, QString> outboundDisplayNames;
             QMap<QString, QString> vpnEndpointTags;
             QList<QString> vpnGateTags;
             QList<QString> vpnAuxTags;
@@ -1377,6 +1377,8 @@ namespace Configs {
                 if (opts.warpWrap && idx == 1) tag = tags::warpBypass;
                 if (idx == 0 && !opts.explicitTag.isEmpty()) tag = opts.explicitTag;
                 const auto& ent = ents[idx];
+                const QString displayName = ent->outbound != nullptr ? ent->outbound->DisplayName() : ent->name;
+                if (!displayName.isEmpty()) ctx.result->outboundDisplayNames.insert(tag, displayName);
                 if (opts.markIngress && idx == 0) ctx.singIngressTags << tag;
                 // Only the head hop (and warp's wrapped outbound) gets a tag rules can name.
                 const bool addressableHop = idx == 0 || (opts.warpWrap && idx == 1) || opts.addressableTags.contains(tag);
@@ -1427,6 +1429,8 @@ namespace Configs {
                 if (opts.includeProxy && idx == 0) tag = tags::proxy;
                 if (idx == 0) ctx.xrayIngressTags << tag;
                 const auto& ent = ents[idx];
+                const QString displayName = ent->outbound != nullptr ? ent->outbound->DisplayName() : ent->name;
+                if (!displayName.isEmpty()) ctx.result->outboundDisplayNames.insert(tag, displayName);
                 auto [object, error] = ent->outbound->BuildXray();
                 if (!error.isEmpty())
                 {
@@ -1904,19 +1908,42 @@ namespace Configs {
             for (const auto& selectorGroup : ctx.prerequisites.routing.selectorGroups) {
                 QJsonArray memberTags;
                 QString defaultTag;
+                QString selectedDisplay;
+                if (selectorGroup.profile == nullptr) {
+                    ctx.error = QObject::tr("Selector group could not resolve its profile");
+                    return;
+                }
+                const QString selectorTag = QString("selector-%1").arg(selectorGroup.profile->id);
                 for (qsizetype i = 0; i < selectorGroup.memberTags.size(); ++i) {
                     memberTags.append(selectorGroup.memberTags[i]);
-                    if (selectorGroup.members[i] == selectorGroup.selectedID) defaultTag = selectorGroup.memberTags[i];
+                    const auto member = getProfile(selectorGroup.members[i]);
+                    const QString nodeName = member != nullptr && member->outbound != nullptr
+                                                 ? member->outbound->DisplayName()
+                                                 : QString::number(selectorGroup.members[i]);
+                    const QString display = selectorGroup.profile->name + " → " + nodeName;
+                    ctx.result->outboundDisplayNames.insert(selectorGroup.memberTags[i], display);
+                    ctx.result->selectorMemberTags[selectorGroup.profile->id].insert(selectorGroup.members[i],
+                                                                                    selectorGroup.memberTags[i]);
+                    if (selectorGroup.members[i] == selectorGroup.selectedID) {
+                        defaultTag = selectorGroup.memberTags[i];
+                        selectedDisplay = display;
+                    }
                 }
-                if (selectorGroup.profile == nullptr || memberTags.isEmpty() || defaultTag.isEmpty()) {
+                if (memberTags.isEmpty() || defaultTag.isEmpty()) {
                     ctx.error = QObject::tr("Selector group could not resolve its member outbounds");
                     return;
                 }
+                ctx.result->outboundDisplayNames.insert(selectorTag, selectedDisplay.isEmpty()
+                                                            ? selectorGroup.profile->name
+                                                            : selectedDisplay);
                 ctx.outbounds.append(QJsonObject{
                     {"type", "selector"},
-                    {"tag", QString("selector-%1").arg(selectorGroup.profile->id)},
+                    {"tag", selectorTag},
                     {"outbounds", memberTags},
                     {"default", defaultTag},
+                    // A switch must retire the flows already open through this group; without it only new
+                    // connections take the new pick, and an open keep-alive keeps reporting the old node.
+                    {"interrupt_exist_connections", true},
                 });
             }
 
@@ -1963,54 +1990,76 @@ namespace Configs {
 
             if (ctx.l3Bridge) {
                 ctx.outbounds.append(QJsonObject{
-                {"type", "bridge"},
-                {"tag", tags::l3Direct}
+                    {"type", "bridge"},
+                    {"tag", tags::l3Direct}
                 });
             }
-
             ctx.result->coreConfig["endpoints"] = ctx.endpoints;
             ctx.result->coreConfig["outbounds"] = ctx.outbounds;
+
+            // The main ingress tag represents the concrete profile being started.
+            if (ctx.ent != nullptr && ctx.ent->outbound != nullptr)
+                ctx.result->outboundDisplayNames.insert(tags::proxy, ctx.ent->outbound->DisplayName());
         }
 
         // --------------------------------------------------------------- route
 
+        QJsonArray uniqueRuleSets(const QJsonArray &input) {
+            QJsonArray result;
+            QSet<QString> seenTags;
+            for (const auto &value : input) {
+                if (!value.isObject()) continue;
+                const auto object = value.toObject();
+                const QString tag = object.value("tag").toString();
+                if (tag.isEmpty() || seenTags.contains(tag)) continue;
+                seenTags.insert(tag);
+                result.append(object);
+            }
+            return result;
+        }
+
         QJsonArray buildRuleSetArray(const BuildContext &ctx) {
             QJsonArray ruleSetArray;
+            QSet<QString> seenTags;
+            auto appendRuleSet = [&ruleSetArray, &seenTags](const QJsonObject &ruleSet) {
+                const QString tag = ruleSet.value("tag").toString();
+                if (tag.isEmpty() || seenTags.contains(tag)) return;
+                seenTags.insert(tag);
+                ruleSetArray.append(ruleSet);
+            };
             for (const auto &item: ctx.prerequisites.routing.neededRuleSets) {
                 if (auto url = QUrl(item); url.isValid() && url.fileName().contains(".srs")) {
-                    ruleSetArray += QJsonObject{
-                                {"type", "remote"},
-                                {"tag", get_rule_set_name(item)},
-                                {"format", "binary"},
-                                {"url", item},
-                            };
+                    appendRuleSet(QJsonObject{
+                        {"type", "remote"},
+                        {"tag", get_rule_set_name(item)},
+                        {"format", "binary"},
+                        {"url", item},
+                    });
+                } else if (auto url = ruleSetUrl(item.toStdString()); !url.empty()) {
+                    appendRuleSet(QJsonObject{
+                        {"type", "remote"},
+                        {"tag", item},
+                        {"format", "binary"},
+                        {"url", get_jsdelivr_link(QString::fromUtf8(url.data(), url.size()))},
+                    });
                 }
-                else
-                    if (auto url = ruleSetUrl(item.toStdString()); !url.empty()) {
-                        ruleSetArray += QJsonObject{
-                                    {"type", "remote"},
-                                    {"tag", item},
-                                    {"format", "binary"},
-                                    {"url", get_jsdelivr_link(QString::fromUtf8(url.data(), url.size()))},
-                                };
-                    }
             }
 
             if (dataManager->settingsRepo->adblock_enable) {
-                ruleSetArray += QJsonObject{
-                            {"type", "remote"},
-                            {"tag", tags::adblockRuleSet},
-                            {"format", "binary"},
-                            {"url", get_jsdelivr_link("https://raw.githubusercontent.com/217heidai/adblockfilters/main/rules/adblocksingbox.srs")},
-                        };
+                appendRuleSet(QJsonObject{
+                    {"type", "remote"},
+                    {"tag", tags::adblockRuleSet},
+                    {"format", "binary"},
+                    {"url", get_jsdelivr_link("https://raw.githubusercontent.com/217heidai/adblockfilters/main/rules/adblocksingbox.srs")},
+                });
             }
 
             if (const auto &tun = ctx.prerequisites.tun; tun.privateRangesAsRuleSet) {
-                ruleSetArray += QJsonObject{
-                            {"type", "inline"},
-                            {"tag", tags::privateRangesRuleSet},
-                            {"rules", QJsonArray{QJsonObject{{"ip_cidr", QJsonArray::fromStringList(tun.bypassedPrivateRanges)}}}},
-                        };
+                appendRuleSet(QJsonObject{
+                    {"type", "inline"},
+                    {"tag", tags::privateRangesRuleSet},
+                    {"rules", QJsonArray{QJsonObject{{"ip_cidr", QJsonArray::fromStringList(tun.bypassedPrivateRanges)}}}},
+                });
             }
             return ruleSetArray;
         }
@@ -2116,17 +2165,25 @@ namespace Configs {
                 });
             }
 
-            // raw profiles bring their own rule_set definitions; merge them after ours.
+            // Raw profiles may carry their own rule_set definitions; merge and deduplicate by tag.
             if (routeChain->isRaw) {
-                for (const auto& rs : rawRouteObj.value("rule_set").toArray()) ruleSetArray.append(rs);
+                for (const auto &rs : rawRouteObj.value("rule_set").toArray()) ruleSetArray.append(rs);
+                ruleSetArray = uniqueRuleSets(ruleSetArray);
             }
 
             const int defOut = routeChain->defaultOutboundID;
-            const QString finalTag = routeChain->isRaw
-                ? (rawRouteObj.contains("final") ? rawRouteObj.value("final").toString() : QString(tags::proxy))
-                : defOut == blockID       ? QString(tags::direct)
-                : defOut == warpBypassID  ? QString(settings.enable_warp ? tags::warpBypass : tags::proxy)
-                                          : outboundIDToString(defOut);
+            QString finalTag;
+            if (routeChain->isRaw) {
+                finalTag = rawRouteObj.contains("final") ? rawRouteObj.value("final").toString() : QString(tags::proxy);
+            } else if (const auto mapped = routeDeps.outboundMap.find(defOut); mapped != routeDeps.outboundMap.end()) {
+                finalTag = mapped->second;
+            } else if (defOut == blockID) {
+                finalTag = tags::direct;
+            } else if (defOut == warpBypassID) {
+                finalTag = settings.enable_warp ? tags::warpBypass : tags::proxy;
+            } else {
+                finalTag = tags::proxy;
+            }
 
             // An endpoint rule the user positioned already emitted this tag's gate.
             auto carriesGate = [](const QJsonArray &rules, const QString &tag) {
@@ -2179,6 +2236,22 @@ namespace Configs {
             appendIfSet(injected.dnsHijack);
             appendIfSet(injected.dnsInReject);
             appendIfSet(injected.redirectSniff);
+            // WebRTC/STUN is UDP: a system proxy never carries it, and a domestic STUN target matches
+            // the CN-direct rules the imported profiles end with, so the real address leaks. Taking the
+            // ports over here puts this ahead of those rules; 0 keeps whatever the profile says.
+            if (settings.stun_udp_policy != 0) {
+                QJsonObject stunRule{
+                    {"network", QJsonArray{"udp"}},
+                    {"port", QJsonArray{3478, 5349, 19302, 19303, 19304, 19305, 19306, 19307, 19308, 19309}},
+                };
+                if (settings.stun_udp_policy == 2) {
+                    stunRule["action"] = "reject";
+                } else {
+                    stunRule["action"] = "route";
+                    stunRule["outbound"] = finalTag;
+                }
+                routeRules.append(stunRule);
+            }
             for (const auto& r : profileRules) routeRules.append(r);
             for (const auto& r : vpnAuxRules) routeRules.append(r);
             for (const auto& r : l3BridgeFinalRules) routeRules.append(r);

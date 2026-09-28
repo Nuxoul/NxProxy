@@ -16,6 +16,7 @@ struct ThemeTokens {
     QColor danger;
     QColor success;
     QColor info;
+    QColor warning;
 };
 
 class ThemeManager : public QObject {

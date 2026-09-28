@@ -126,6 +126,7 @@ var handlers = map[string]handlerFn{
 	"CloseConnections":    handle(globalServer.CloseConnections),
 	"QueryAutoSelectors":  handle(globalServer.QueryAutoSelectors),
 	"AutoSelectorAction":  handle(globalServer.AutoSelectorAction),
+	"SelectOutbound":      handle(globalServer.SelectOutbound),
 	"IsPrivileged":        handle(globalServer.IsPrivileged),
 	"SetSystemDNS":        handle(globalServer.SetSystemDNS),
 	"GetDefaultInterface": handle(globalServer.GetDefaultInterface),

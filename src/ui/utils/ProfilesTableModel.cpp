@@ -110,11 +110,32 @@ QVariant ProfilesTableModel::data(const QModelIndex &index, int role) const {
             return type;
         }
         case ColAddress: return profile->outbound ? profile->outbound->DisplayAddress() : QString();
-        case ColName: return profile->outbound ? profile->outbound->name : QString();
+        case ColName: {
+            const QString name = profile->outbound ? profile->outbound->name : QString();
+            return m_selectorSelectionEnabled && profileId == m_selectorSelectedProfileId ? QStringLiteral("✓ ") + name : name;
+        }
         case ColTestResult: return profile->DisplayTestResult();
         case ColTraffic: return profile->DisplayTraffic();
         default: return {};
         }
+    }
+    if (role == Qt::TextAlignmentRole) {
+        // Figures belong on the right edge: latency and traffic then scan as columns.
+        switch (index.column()) {
+        case ColTestResult:
+        case ColTraffic:
+            return QVariant(Qt::AlignRight | Qt::AlignVCenter);
+        default:
+            return {};
+        }
+    }
+    if (role == Qt::FontRole && m_selectorSelectionEnabled && profileId == m_selectorSelectedProfileId) {
+        QFont font = QApplication::font();
+        font.setBold(true);
+        return font;
+    }
+    if (role == Qt::BackgroundRole && m_selectorSelectionEnabled && profileId == m_selectorSelectedProfileId) {
+        return QApplication::palette().brush(QPalette::Active, QPalette::AlternateBase);
     }
     if (role == Qt::ToolTipRole) {
         if (index.column() == ColType && Configs::dataManager->settingsRepo->show_config_security
@@ -132,6 +153,27 @@ QVariant ProfilesTableModel::data(const QModelIndex &index, int role) const {
         return {};
     }
     return {};
+}
+
+void ProfilesTableModel::setSelectorSelectedProfileId(int profileId) {
+    const int previous = m_selectorSelectedProfileId;
+    const bool previousEnabled = m_selectorSelectionEnabled;
+    m_selectorSelectedProfileId = profileId;
+    m_selectorSelectionEnabled = profileId >= 0;
+    if (previous == profileId && previousEnabled == m_selectorSelectionEnabled) return;
+
+    const QList<int> roles{Qt::DisplayRole, Qt::FontRole, Qt::BackgroundRole};
+    const auto notify = [this, &roles](int id) {
+        const int row = indexOfProfile(id);
+        if (row < 0) return;
+        emit dataChanged(index(row, 0), index(row, columnCount() - 1), roles);
+    };
+    notify(previous);
+    notify(profileId);
+}
+
+void ProfilesTableModel::clearSelectorSelectedProfileId() {
+    setSelectorSelectedProfileId(-1);
 }
 
 QVariant ProfilesTableModel::headerData(int section, Qt::Orientation orientation, int role) const {

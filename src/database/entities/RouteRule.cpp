@@ -594,7 +594,7 @@ namespace Configs {
                     rule_set.empty() &&
                     ip_cidr.empty();
             } else {
-                return process_name.empty() && process_path.empty();
+                return process_name.empty() && process_path.empty() && process_path_regex.empty();
             }
         }
         auto ruleJson = get_rule_json();

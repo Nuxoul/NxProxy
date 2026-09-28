@@ -453,6 +453,10 @@ namespace Subscription {
                     produce(ent);
                 }
 
+                if (sink.ruleLine && root.contains("rules") && root["rules"].is_sequence()) {
+                    for (const auto &rule : root["rules"])
+                        if (rule.is_string()) sink.ruleLine(QString::fromStdString(rule.get_value<std::string>()));
+                }
                 if (!sink.proxyGroup || !root.contains("proxy-groups") || !root["proxy-groups"].is_sequence()) return;
                 for (const auto &node : root["proxy-groups"]) {
                     if (!node.is_mapping() || !node.contains("name") || !node.contains("type") || !node.contains("proxies")) continue;
@@ -461,9 +465,8 @@ namespace Subscription {
                     ProxyGroup group;
                     group.name = QString::fromStdString(node["name"].get_value<std::string>());
                     group.type = QString::fromStdString(type);
-                    for (const auto &member : node["proxies"]) {
+                    for (const auto &member : node["proxies"])
                         if (member.is_string()) group.proxies << QString::fromStdString(member.get_value<std::string>());
-                    }
                     if (node.contains("selected") && node["selected"].is_string())
                         group.selected = QString::fromStdString(node["selected"].get_value<std::string>());
                     sink.proxyGroup(group);

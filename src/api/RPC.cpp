@@ -419,6 +419,23 @@ namespace API {
         }
     }
 
+    QString Client::SelectOutbound(bool *rpcOK, const QString &groupTag, const QString &outboundTag) const {
+        libcore::SelectOutboundRequest request;
+        request.group_tag = groupTag.toStdString();
+        request.outbound_tag = outboundTag.toStdString();
+        libcore::ErrorResp reply;
+        std::vector<uint8_t> resp;
+        auto status = channel->Call("SelectOutbound", spb::pb::serialize<std::string>(request), resp);
+
+        if (status == LocalSocketChannel::CallOK && tryDeserialize(resp, reply)) {
+            *rpcOK = true;
+            return QString::fromStdString(reply.error.value());
+        } else {
+            NOT_OK
+            return "IPC error";
+        }
+    }
+
     libcore::VPNStatusResponse Client::QueryVPNStatus(bool *rpcOK, const QStringList &endpointTags,
                                                       int timeoutMs) const {
         libcore::VPNStatusRequest request;

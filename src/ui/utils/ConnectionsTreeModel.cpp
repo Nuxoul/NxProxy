@@ -136,7 +136,7 @@ QVariant ConnectionsTreeModel::data(const QModelIndex &index, int role) const {
         case ColProtocol:
             return leaf->protocolText;
         case ColOutbound:
-            return leaf->meta.outbound;
+            return leaf->meta.outboundDisplay;
         case ColTraffic:
             return ReadableSize(leaf->upload) + "↑ " + ReadableSize(leaf->download) + "↓";
         case ColSpeed:
@@ -148,13 +148,13 @@ QVariant ConnectionsTreeModel::data(const QModelIndex &index, int role) const {
         if (index.column() != ColTarget) return {};
         const QString process = displayProcessName(leaf->parent->processName);
         if (leaf->count > 1) {
-            return tr("Destination: %1\nConnections: %2\nProcess: %3\nProtocol: %4\nOutbound: %5\nTotal traffic: %6↑ %7↓\nTotal speed: %8/s↑ %9/s↓")
-                .arg(leaf->destText, QString::number(leaf->count), process, leaf->protocolText, leaf->meta.outbound,
+            return tr("Destination: %1\nConnections: %2\nProcess: %3\nProtocol: %4\nStrategy / node: %5\nCore outbound: %6\nTotal traffic: %7↑ %8↓\nTotal speed: %9/s↑ %10/s↓")
+                .arg(leaf->destText, QString::number(leaf->count), process, leaf->protocolText, leaf->meta.outboundDisplay, leaf->meta.outbound,
                      ReadableSize(leaf->upload), ReadableSize(leaf->download),
                      ReadableSize(leaf->uploadSpeed), ReadableSize(leaf->downloadSpeed));
         }
-        return tr("Destination: %1\nProcess: %2\nProtocol: %3\nOutbound: %4")
-            .arg(leaf->destText, process, leaf->protocolText, leaf->meta.outbound);
+        return tr("Destination: %1\nProcess: %2\nProtocol: %3\nStrategy / node: %4\nCore outbound: %5")
+            .arg(leaf->destText, process, leaf->protocolText, leaf->meta.outboundDisplay, leaf->meta.outbound);
     }
     default:
         return {};
@@ -203,10 +203,10 @@ void ConnectionsTreeModel::setConnections(const QList<Stats::ConnectionMetadata>
         if (group == nullptr) {
             group = groups.emplace_back(std::make_unique<ProcessGroupItem>()).get();
             group->processName = process;
-            group->commonOutbound = c.outbound;
+            group->commonOutbound = c.outboundDisplay;
             group->commonSource = c.sourceDisplay;
         }
-        group->sameOutbound = group->sameOutbound && group->commonOutbound == c.outbound;
+        group->sameOutbound = group->sameOutbound && group->commonOutbound == c.outboundDisplay;
         group->sameSource = group->sameSource && group->commonSource == c.sourceDisplay;
         group->totalConnections++;
         group->totalUpload += c.upload;

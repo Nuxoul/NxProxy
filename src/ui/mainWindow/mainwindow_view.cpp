@@ -8,6 +8,10 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QPushButton>
+#include <QFontMetrics>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QVBoxLayout>
 
 #include "include/api/RPC.h"
 #include "include/database/GroupsRepo.h"
@@ -114,7 +118,7 @@ void MainWindow::applyProfileFilters()
 {
     if (!profilesFilterModel) return;
     profilesFilterModel->setFilters(typeFilterString, addressFilterString, nameFilterString, countryFilterString);
-    refresh_selector_panel();
+    // Selector panel is user-driven; do not scan legacy selector rows during generic filter refresh.
     refresh_proxy_list_column_size();
 }
 
@@ -126,7 +130,7 @@ void MainWindow::refresh_status(const QString &traffic_update) {
             ui->label_speed->setText("");
         }
         else if (traffic_update_cache == "") {
-            ui->label_speed->setText(QObject::tr("Proxy: %1\nDirect: %2").arg("", ""));
+            ui->label_speed->setText(QString("%1 %2  %3 %4").arg(tr("Proxy:"), "-", tr("Direct:"), "-"));
         } else {
             ui->label_speed->setText(traffic_update_cache);
         }
@@ -191,15 +195,22 @@ void MainWindow::refresh_status(const QString &traffic_update) {
     const QString activeRouteName = (route && route->name != "Default") ? route->name : "";
 
     auto make_title = [=,this](bool isTray) {
+        // The window title stays short: the old bracket chain ran past 900px and slid under the
+        // system buttons. Everything it used to carry is still in the tray tooltip below.
+        if (!isTray) {
+            QString title = QString("%1 %2").arg(software_name, QString(NKR_VERSION));
+            if (!activeRouteName.isEmpty()) title += QString(" · %1").arg(activeRouteName);
+            if (running == nullptr) title += QString(" (%1)").arg(tr("Stopped"));
+            return title;
+        }
         QStringList tt;
-        if (!isTray && Configs::IsAdmin()) tt << "[Admin]";
+        if (Configs::IsAdmin()) tt << "[" + tr("Admin") + "]";
         if (select_mode) tt << "[" + tr("Select") + "]";
         if (!title_error.isEmpty()) tt << "[" + title_error + "]";
         if (settings->spmode_vpn && !settings->spmode_system_proxy) tt << "[Tun]";
         if (!settings->spmode_vpn && settings->spmode_system_proxy) tt << "[" + tr("System Proxy") + "]";
         if (settings->spmode_vpn && settings->spmode_system_proxy) tt << "[Tun+" + tr("System Proxy") + "]";
         tt << software_name;
-        if (!isTray) tt << QString(NKR_VERSION);
         if (!activeRouteName.isEmpty()) {
             tt << "[" + activeRouteName + "]";
         }
@@ -209,7 +220,7 @@ void MainWindow::refresh_status(const QString &traffic_update) {
                 tt << runningDetail;
             }
         }
-        return tt.join(isTray ? "\n" : " ");
+        return tt.join("\n");
     };
 
     auto icon_status_new = Icon::TrayIconStatus::None;
@@ -296,11 +307,17 @@ void MainWindow::refresh_proxy_list_column_size() {
             group->column_width.clear();
         }
         if (group->column_width.isEmpty()) {
-            hHeader->setSectionResizeMode(ProfilesTableModel::ColType, QHeaderView::ResizeToContents);
-            hHeader->setSectionResizeMode(ProfilesTableModel::ColAddress, QHeaderView::Stretch);
+            // Metadata columns are pinned so the node name gets everything left over: stretching
+            // traffic instead left 273px of unpainted table on a 1067px window.
+            hHeader->setSectionResizeMode(ProfilesTableModel::ColType, QHeaderView::Fixed);
+            hHeader->resizeSection(ProfilesTableModel::ColType, 84);
+            hHeader->setSectionResizeMode(ProfilesTableModel::ColAddress, QHeaderView::ResizeToContents);
             hHeader->setSectionResizeMode(ProfilesTableModel::ColName, QHeaderView::Stretch);
-            hHeader->setSectionResizeMode(ProfilesTableModel::ColTestResult, QHeaderView::ResizeToContents);
-            hHeader->setSectionResizeMode(ProfilesTableModel::ColTraffic, QHeaderView::ResizeToContents);
+            hHeader->setSectionResizeMode(ProfilesTableModel::ColTestResult, QHeaderView::Fixed);
+            hHeader->resizeSection(ProfilesTableModel::ColTestResult, 150);
+            hHeader->setSectionResizeMode(ProfilesTableModel::ColTraffic, QHeaderView::Fixed);
+            hHeader->resizeSection(ProfilesTableModel::ColTraffic, 130);
+            hHeader->setStretchLastSection(false);
             // ResizeToContents only measures on-screen rows, so pin these or they jitter while scrolling.
             for (int col : {ProfilesTableModel::ColType,
                             ProfilesTableModel::ColTestResult, ProfilesTableModel::ColTraffic}) {
@@ -346,7 +363,7 @@ void MainWindow::refresh_proxy_list_impl(const QList<int>& ids, bool mayNeedRese
         MW_show_log("Could not find current group!");
         return;
     }
-    refresh_selector_panel();
+    refresh_proxy_list_impl_refresh_data(ids, mayNeedReset);
     refresh_proxy_list_column_size();
 }
 
@@ -407,7 +424,8 @@ QString MainWindow::liveVpnConnectOkText() {
 
 void MainWindow::url_test_current() {
     last_test_time = QDateTime::currentSecsSinceEpoch();
-    ui->label_running->setText(tr("Testing"));
+    // No "Testing" takeover here: the chip reports the live node, and the test progress lives in the
+    // dashboard above, so a test can no longer hide which node is actually running.
 
     runOnNewThread([=,this] {
         libcore::TestReq req;
@@ -437,68 +455,114 @@ void MainWindow::url_test_current() {
 }
 void MainWindow::refresh_selector_panel()
 {
-    if (ui->selectorCardsLayout == nullptr) return;
+    if (ui->selectorGroupList == nullptr || profilesFilterModel == nullptr || profilesTableModel == nullptr) return;
     const auto group = Configs::dataManager->groupsRepo->CurrentGroup();
     if (group == nullptr) return;
-    while (ui->selectorCardsLayout->count() > 0) {
-        auto *item = ui->selectorCardsLayout->takeAt(0);
-        if (item->widget() != nullptr) item->widget()->deleteLater();
-        delete item;
-    }
-    int selectorCount = 0;
-    for (const int selectorId : group->profiles) {
-        const auto profile = Configs::dataManager->profilesRepo->GetProfile(selectorId);
+    const int previous = selectedSelectorId;
+    ui->selectorGroupList->blockSignals(true);
+    ui->selectorGroupList->clear();
+    QList<int> selectorIds;
+    // Two-line rows need their own elide widths: a long node name must not widen the panel.
+    const int rowWidth = qMax(160, ui->selectorGroupList->viewport()->width());
+    const int titleTextWidth = rowWidth - 26;
+    const int nodeTextWidth = qMax(60, rowWidth - 84);
+    for (const int id : group->profiles) {
+        const auto profile = Configs::dataManager->profilesRepo->GetProfile(id);
         if (profile == nullptr || profile->type != "selector") continue;
         const auto selector = profile->Selector();
         if (selector == nullptr) continue;
-        ++selectorCount;
-        auto *card = new QGroupBox(ui->selectorCardsContainer);
-        card->setTitle(QString("%1   ·   %2 member(s)").arg(profile->name).arg(selector->members.size()));
-        card->setCheckable(true);
-        card->setChecked(selectorId == selectedSelectorId);
-        card->setStyleSheet("QGroupBox { font-weight: 600; border: 1px solid palette(mid); border-radius: 6px; margin-top: 8px; padding-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }");
-        auto *layout = new QGridLayout(card);
-        layout->setSpacing(6);
-        int column = 0;
-        int row = 0;
-        for (const int memberId : selector->members) {
-            const auto member = Configs::dataManager->profilesRepo->GetProfile(memberId);
-            if (member == nullptr) continue;
-            auto *button = new QPushButton(member->outbound->DisplayTypeAndName(), card);
-            button->setCheckable(true);
-            button->setChecked(memberId == selector->selectedID);
-            button->setToolTip(memberId == selector->selectedID ? tr("Current node") : tr("Use this node for %1").arg(profile->name));
-            button->setStyleSheet(memberId == selector->selectedID ? "QPushButton { background: #1976d2; color: white; font-weight: 600; }" : "");
-            connect(button, &QPushButton::clicked, this, [this, selectorId, memberId] {
-                const auto selectorProfile = Configs::dataManager->profilesRepo->GetProfile(selectorId);
-                if (selectorProfile == nullptr || selectorProfile->Selector() == nullptr) return;
-                selectorProfile->Selector()->selectedID = memberId;
-                Configs::dataManager->profilesRepo->Save(selectorProfile);
-                selectedSelectorId = selectorId;
-                refresh_selector_panel();
-                if (Configs::dataManager->settingsRepo->started_id >= 0)
-                    noteRestartNeeded(tr("Strategy group %1").arg(selectorProfile->name));
-            });
-            layout->addWidget(button, row, column++);
-            if (column == 3) { column = 0; ++row; }
-        }
-        connect(card, &QGroupBox::toggled, this, [this, selectorId](bool expanded) {
-            selectedSelectorId = selectorId;
-            if (auto *cardWidget = qobject_cast<QGroupBox *>(sender())) {
-                for (int i = 0; i < cardWidget->layout()->count(); ++i)
-                    if (auto *child = cardWidget->layout()->itemAt(i)->widget()) child->setVisible(expanded);
-            }
-        });
-        for (int i = 0; i < layout->count(); ++i)
-            if (auto *child = layout->itemAt(i)->widget()) child->setVisible(card->isChecked());
-        ui->selectorCardsLayout->addWidget(card);
+        selectorIds.append(id);
+        const auto selectedProfile = Configs::dataManager->profilesRepo->GetProfile(selector->selectedID);
+        const QString selectedName = selectedProfile != nullptr && selectedProfile->outbound != nullptr
+                                         ? selectedProfile->outbound->name
+                                         : tr("No node selected");
+        const int latency = selectedProfile == nullptr ? 0 : selectedProfile->latency;
+        // Same thresholds as the table, so a group and its members never disagree about a node.
+        const QString latencyText = selectedProfile == nullptr || latency == 0
+                                        ? QString(QChar(0x2014))
+                                        : latency == Configs::kLatencyConnectOnly ? tr("Connect OK")
+                                        : latency < 0                             ? tr("Unavailable")
+                                                                                  : QString("%1 ms").arg(latency);
+        const QString latencyClass = selectedProfile == nullptr || latency == 0 ? QStringLiteral("muted")
+                                     : latency == Configs::kLatencyConnectOnly  ? QStringLiteral("info")
+                                     : latency < 0                              ? QStringLiteral("bad")
+                                     : latency <= 100                           ? QStringLiteral("good")
+                                     : latency <= 300                           ? QStringLiteral("warn")
+                                                                                : QStringLiteral("bad");
+        auto *item = new QListWidgetItem(ui->selectorGroupList);
+        item->setData(Qt::UserRole, id);
+        auto *itemWidget = new QWidget(ui->selectorGroupList);
+        // The row has to stay a list row: clicks belong to the view, not to the labels drawn over it.
+        itemWidget->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        auto *itemLayout = new QVBoxLayout(itemWidget);
+        itemLayout->setContentsMargins(8, 5, 8, 5);
+        itemLayout->setSpacing(1);
+        auto *titleRow = new QHBoxLayout();
+        titleRow->setContentsMargins(0, 0, 0, 0);
+        auto *nameLabel = new QLabel(itemWidget);
+        nameLabel->setObjectName("selectorGroupName");
+        nameLabel->setText(QFontMetrics(nameLabel->font()).elidedText(profile->name, Qt::ElideRight, titleTextWidth));
+        titleRow->addWidget(nameLabel);
+        auto *nodeRow = new QHBoxLayout();
+        nodeRow->setContentsMargins(0, 0, 0, 0);
+        nodeRow->setSpacing(6);
+        auto *nodeLabel = new QLabel(itemWidget);
+        nodeLabel->setObjectName("selectorNodeName");
+        nodeLabel->setText(QFontMetrics(nodeLabel->font()).elidedText(selectedName, Qt::ElideMiddle, nodeTextWidth));
+        auto *badge = new QLabel(latencyText, itemWidget);
+        badge->setObjectName("selectorLatencyBadge");
+        badge->setAlignment(Qt::AlignCenter);
+        // What the group routes through right now, rather than how many members it happens to hold.
+        badge->setProperty("latencyClass", latencyClass);
+        nodeRow->addWidget(nodeLabel, 1);
+        nodeRow->addWidget(badge, 0);
+        itemLayout->addLayout(titleRow);
+        itemLayout->addLayout(nodeRow);
+        ui->selectorGroupList->setItemWidget(item, itemWidget);
+        item->setSizeHint(QSize(rowWidth, qMax(46, itemWidget->sizeHint().height())));
     }
-    ui->selectorCardsContainer->setMinimumHeight(selectorCount == 0 ? 0 : 180);
-    ui->selectorCardsScroll->setVisible(selectorCount > 0);
+
+    // Rows doubled in height once they gained a second line, so the old 180px cap started clipping
+    // the fifth group: size the panel to its content instead, up to eight groups before scrolling.
+    if (!selectorIds.isEmpty()) {
+        constexpr int rowHeight = 46;
+        ui->selectorGroupList->setFixedHeight(qBound(96, selectorIds.size() * (rowHeight + 1) + 8, 376));
+    }
+
+    const int row = selectorIds.indexOf(previous) >= 0 ? selectorIds.indexOf(previous) : (selectorIds.isEmpty() ? -1 : 0);
+    if (row < 0) {
+        selectedSelectorId = -1;
+        profilesFilterModel->clearAllowedProfileIds();
+        profilesTableModel->clearSelectorSelectedProfileId();
+    } else {
+        selectedSelectorId = selectorIds[row];
+        ui->selectorGroupList->setCurrentRow(row);
+        const auto selectedProfile = Configs::dataManager->profilesRepo->GetProfile(selectedSelectorId);
+        const auto selector = selectedProfile == nullptr ? nullptr : selectedProfile->Selector();
+        if (selector == nullptr) {
+            profilesFilterModel->clearAllowedProfileIds();
+            profilesTableModel->clearSelectorSelectedProfileId();
+        } else {
+            profilesFilterModel->setAllowedProfileIds(selector->members);
+            profilesTableModel->setSelectorSelectedProfileId(selector->selectedID);
+        }
+    }
+    ui->selectorGroupList->blockSignals(false);
 }
 
 void MainWindow::show_selector_members(int selectorId)
 {
     selectedSelectorId = selectorId;
-    refresh_selector_panel();
+    const auto profile = Configs::dataManager->profilesRepo->GetProfile(selectorId);
+    const auto selector = profile == nullptr ? nullptr : profile->Selector();
+    if (selector == nullptr) {
+        profilesFilterModel->clearAllowedProfileIds();
+        profilesTableModel->clearSelectorSelectedProfileId();
+        return;
+    }
+    QList<int> validMembers;
+    for (const int memberId : selector->members)
+        if (Configs::dataManager->profilesRepo->GetProfile(memberId) != nullptr) validMembers.append(memberId);
+    profilesFilterModel->setAllowedProfileIds(validMembers);
+    profilesTableModel->setSelectorSelectedProfileId(selector->selectedID);
 }

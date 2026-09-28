@@ -65,6 +65,7 @@ DialogBasicSettings::DialogBasicSettings(QWidget *parent)
     ui->simple_down_url->setText(Configs::dataManager->settingsRepo->simple_dl_url);
     ui->allow_beta->setChecked(Configs::dataManager->settingsRepo->allow_beta_update);
     ui->disable_mixed_inbound->setChecked(Configs::dataManager->settingsRepo->disable_mixed_inbound);
+    ui->stun_udp_policy->setCurrentIndex(qBound(0, Configs::dataManager->settingsRepo->stun_udp_policy, 2));
     D_LOAD_BOOL(inbound_auth)
     D_LOAD_STRING(inbound_user)
     D_LOAD_STRING(inbound_pass)
@@ -384,6 +385,7 @@ void DialogBasicSettings::accept() {
     Configs::dataManager->settingsRepo->speed_test_timeout_ms = ui->test_timeout->text().trimmed().toInt();
     Configs::dataManager->settingsRepo->allow_beta_update = ui->allow_beta->isChecked();
     Configs::dataManager->settingsRepo->disable_mixed_inbound = ui->disable_mixed_inbound->isChecked();
+    Configs::dataManager->settingsRepo->stun_udp_policy = ui->stun_udp_policy->currentIndex();
     Configs::dataManager->settingsRepo->reset_proxy_on_disable_sp = ui->reset_proxy_on_disable_sp->isChecked();
     D_SAVE_BOOL(inbound_auth)
     D_SAVE_STRING(inbound_user)
