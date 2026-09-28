@@ -252,6 +252,12 @@ static QString strategyPanelStyleSheet(const ThemeTokens &t) {
     const QColor hover = separate(blendToward(t.accent, t.surface, 0.18), t.surface, 1.06);
     const QColor selected = separate(blendToward(t.accent, t.surface, 0.34), t.surface, 1.12);
     const QColor chipFill = separate(blendToward(t.onSurface, t.surface, 0.10), t.surface, 1.06);
+    // Table chrome: a divided header over rows that alternate so faintly the eye only sees bands.
+    const QColor rowAlt = blendToward(t.onSurface, t.surface, 0.04);
+    const QColor subtleBorder = blendToward(t.onSurface, t.surface, 0.15);
+    const QColor headerBg = blendToward(t.onSurface, t.surface, 0.12);
+    const QColor tableHover = separate(blendToward(t.accent, t.surface, 0.14), t.surface, 1.08);
+    const QColor tableSelect = separate(blendToward(t.accent, t.surface, 0.28), t.surface, 1.15);
     // Badges carry a tinted fill, so the text target is the fill and not the window behind it.
     const QColor badgeGood = blendToward(t.success, t.surface, 0.20);
     const QColor badgeWarn = blendToward(t.warning, t.surface, 0.20);
@@ -283,6 +289,25 @@ static QString strategyPanelStyleSheet(const ThemeTokens &t) {
         "    padding: 3px 8px;\n"
         "    margin-right: 6px;\n"
         "}\n"
+        // The member table reads as a table now: taller rows, a header that is a header, and the
+        // node name column owning the leftover width instead of traffic hogging it.
+        "#profilesTableView { alternate-background-color: %16; gridline-color: transparent; }\n"
+        "#profilesTableView::item { min-height: 32px; max-height: 32px; padding: 0px 8px; border-bottom: 1px solid %17; }\n"
+        "#profilesTableView::item:hover { background-color: %18; }\n"
+        "#profilesTableView::item:selected { background-color: %19; }\n"
+        "#profilesTableView QHeaderView::section {\n"
+        "    background-color: %20;\n"
+        "    color: %5;\n"
+        "    font-size: 11px;\n"
+        "    font-weight: 600;\n"
+        "    border: none;\n"
+        "    border-right: 1px solid %17;\n"
+        "    border-bottom: 1px solid %1;\n"
+        "    padding: 4px 8px;\n"
+        "}\n"
+        // One line of fixed-width figures, so this chip matches the height of the two beside it.
+        "#label_speed { font-family: Consolas, monospace; font-size: 11px; }\n"
+        "#label_running, #label_inbound, #label_speed { min-height: 26px; }\n"
     );
     sheet = sheet.arg(hex(border))                                 // 1
                  .arg(hex(hover))                                  // 2
@@ -298,7 +323,13 @@ static QString strategyPanelStyleSheet(const ThemeTokens &t) {
                  .arg(hex(badgeWarn))                              // 12
                  .arg(hex(badgeBad))                               // 13
                  .arg(hex(badgeInfo))                              // 14
-                 .arg(hex(chipFill));                              // 15
+                 .arg(hex(chipFill))                               // 15
+                 .arg(hex(rowAlt))                                 // 16
+                 .arg(hex(subtleBorder))                           // 17
+                 .arg(hex(tableHover))                             // 18
+                 .arg(hex(tableSelect))                            // 19
+                 .arg(hex(headerBg));                              // 20
+    return sheet;
     return sheet;
 }
 

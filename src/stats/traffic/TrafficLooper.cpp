@@ -122,7 +122,6 @@ namespace Stats {
                     m->refresh_status(QString("%1 %2  %3 %4")
                                           .arg(QObject::tr("Proxy:"), DisplaySpeed(proxy),
                                                QObject::tr("Direct:"), DisplaySpeed(direct)));
-                                          .arg(DisplaySpeed(direct)));
                     m->update_traffic_graph(proxy->downlink_rate, proxy->uplink_rate, direct->downlink_rate, direct->uplink_rate);
                 }
                 QList<int> ids;
