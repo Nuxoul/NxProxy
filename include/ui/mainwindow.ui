@@ -429,14 +429,14 @@ QToolButton::menu-indicator {
          <widget class="QListWidget" name="selectorGroupList">
           <property name="minimumSize">
            <size>
-            <width>0</width>
+            <width>340</width>
             <height>86</height>
            </size>
           </property>
           <property name="maximumSize">
            <size>
-            <width>16777215</width>
-            <height>180</height>
+            <width>460</width>
+            <height>16777215</height>
            </size>
           </property>
           <property name="selectionMode">
@@ -444,7 +444,7 @@ QToolButton::menu-indicator {
           </property>
          </widget>
         </item>
-        <item row="2" column="0">
+      <item row="0" column="1">
          <widget class="QWidget" name="selectorMemberToolbar">
           <layout class="QHBoxLayout" name="selectorMemberToolbarLayout">
            <property name="leftMargin">
@@ -482,7 +482,7 @@ QToolButton::menu-indicator {
           </layout>
          </widget>
         </item>
-        <item row="3" column="0">
+      <item row="1" column="1">
          <widget class="ProfilesTableView" name="profilesTableView">
           <property name="contextMenuPolicy">
            <enum>Qt::ContextMenuPolicy::CustomContextMenu</enum>

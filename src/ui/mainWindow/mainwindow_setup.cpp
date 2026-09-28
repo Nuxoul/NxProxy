@@ -708,6 +708,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     ui->selectorGroupList->setVerticalScrollMode(QAbstractItemView::ScrollPerItem);
     // Only a floor: the filter row in this header grows the header further when it needs to.
     ui->profilesTableView->horizontalHeader()->setMinimumHeight(30);
+    // The page is two columns now: the strategy panel keeps a strip on the left and the member
+    // table takes everything else, at the full height of the page.
+    ui->gridLayout_2->setColumnStretch(0, 0);
+    ui->gridLayout_2->setColumnStretch(1, 1);
+    ui->gridLayout_2->setRowStretch(1, 1);
     ui->profilesTableView->setTabKeyNavigation(false);
     ui->profilesTableView->horizontalHeader()->setResizeContentsPrecision(0);
 

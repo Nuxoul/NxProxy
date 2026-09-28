@@ -4,6 +4,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QTimer>
+#include <QGridLayout>
 #include <QVBoxLayout>
 
 #include "include/configs/sub/GroupUpdater.hpp"
@@ -44,7 +45,16 @@ void MainWindow::show_group(int gid) {
         Configs::dataManager->settingsRepo->Save();
     }
 
-    ui->tabWidget->widget(groupId2TabIndex(gid))->layout()->addWidget(ui->profilesTableView);
+    // The table follows the active group into its page. It must land in the cell that page reserved
+    // for it: a coordinate-less addWidget() appends at the next free cell, which put the whole table
+    // under the strategy panel in the left column instead of beside it.
+    if (auto *page = ui->tabWidget->widget(groupId2TabIndex(gid))) {
+        if (page == ui->widget1) {
+            static_cast<QGridLayout *>(page->layout())->addWidget(ui->profilesTableView, 1, 1);
+        } else if (page->layout() != nullptr) {
+            page->layout()->addWidget(ui->profilesTableView);
+        }
+    }
 
     refresh_selector_panel();
     refresh_proxy_list({}, true);

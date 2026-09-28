@@ -8,6 +8,7 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QPushButton>
+#include <QPainter>
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -22,6 +23,29 @@
 #include "include/stats/autoselector/AutoSelectorMonitor.hpp"
 #include "include/ui/setting/Icon.hpp"
 #include "include/ui/stats/dialog_auto_selector.h"
+namespace {
+// QLabel never elides, and a row's width is not known while it is being built: that is how node
+// names stayed abbreviated inside a panel that had room to spare. Elide against the live width.
+class ElidedLabel : public QLabel {
+public:
+    explicit ElidedLabel(QWidget *parent = nullptr) : QLabel(parent) {}
+
+    // The full text must not push the layout: a row owns its width, the label only fills it.
+    QSize sizeHint() const override { return QSize(0, QLabel::sizeHint().height()); }
+    QSize minimumSizeHint() const override { return QSize(0, QLabel::minimumSizeHint().height()); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        // Tail elision keeps the readable head of a name; the badge beside it carries the tail's value.
+        const QString shown = fontMetrics().elidedText(text(), Qt::ElideRight, width());
+        painter.setPen(palette().color(foregroundRole()));
+        painter.drawText(rect(), static_cast<int>(alignment()), shown);
+    }
+};
+}
+
 #include "include/ui/utils/ProfilesTableFilterHeader.h"
 #include "include/ui/utils/ProfilesTableModel.h"
 #include "include/ui/widget/StartStopButton.hpp"
@@ -472,10 +496,8 @@ void MainWindow::refresh_selector_panel()
     ui->selectorGroupList->blockSignals(true);
     ui->selectorGroupList->clear();
     QList<int> selectorIds;
-    // Two-line rows need their own elide widths: a long node name must not widen the panel.
+    // The row is pinned to the viewport width, so a long node name cannot widen the panel.
     const int rowWidth = qMax(160, ui->selectorGroupList->viewport()->width());
-    const int titleTextWidth = rowWidth - 26;
-    const int nodeTextWidth = qMax(60, rowWidth - 84);
     for (const int id : group->profiles) {
         const auto profile = Configs::dataManager->profilesRepo->GetProfile(id);
         if (profile == nullptr || profile->type != "selector") continue;
@@ -509,16 +531,16 @@ void MainWindow::refresh_selector_panel()
         itemLayout->setSpacing(1);
         auto *titleRow = new QHBoxLayout();
         titleRow->setContentsMargins(0, 0, 0, 0);
-        auto *nameLabel = new QLabel(itemWidget);
+        auto *nameLabel = new ElidedLabel(itemWidget);
         nameLabel->setObjectName("selectorGroupName");
-        nameLabel->setText(QFontMetrics(nameLabel->font()).elidedText(profile->name, Qt::ElideRight, titleTextWidth));
+        nameLabel->setText(profile->name);
         titleRow->addWidget(nameLabel);
         auto *nodeRow = new QHBoxLayout();
         nodeRow->setContentsMargins(0, 0, 0, 0);
         nodeRow->setSpacing(6);
-        auto *nodeLabel = new QLabel(itemWidget);
+        auto *nodeLabel = new ElidedLabel(itemWidget);
         nodeLabel->setObjectName("selectorNodeName");
-        nodeLabel->setText(QFontMetrics(nodeLabel->font()).elidedText(selectedName, Qt::ElideMiddle, nodeTextWidth));
+        nodeLabel->setText(selectedName);
         auto *badge = new QLabel(latencyText, itemWidget);
         badge->setObjectName("selectorLatencyBadge");
         badge->setAlignment(Qt::AlignCenter);
@@ -532,17 +554,6 @@ void MainWindow::refresh_selector_panel()
         item->setSizeHint(QSize(rowWidth, qMax(46, itemWidget->sizeHint().height())));
     }
 
-    // Rows doubled in height once they gained a second line, so the old 180px cap started clipping
-    // the fifth group. The panel now takes what its content needs, but never more than half the
-    // page: the member table below is the workspace, and an eight-row panel left it one row tall.
-    if (!selectorIds.isEmpty()) {
-        constexpr int rowHeight = 46;
-        int cap = 290;
-        if (const QWidget *page = ui->selectorGroupList->parentWidget()) {
-            cap = qMax(150, (page->height() - 96) / 2);
-        }
-        ui->selectorGroupList->setFixedHeight(qBound(96, selectorIds.size() * (rowHeight + 1) + 8, cap));
-    }
 
     const int row = selectorIds.indexOf(previous) >= 0 ? selectorIds.indexOf(previous) : (selectorIds.isEmpty() ? -1 : 0);
     if (row < 0) {
