@@ -121,7 +121,12 @@ namespace Configs {
         uuid = QString::fromStdString(object.uuid);
         if (!object.cipher.empty()) security = QString::fromStdString(object.cipher);
         alter_id = object.alterId;
-        packet_encoding = QString::fromStdString(object.packet_encoding);
+        // Same rule as VLESS: an absent packet-encoding means the Xray-native framing, not the
+        // legacy per-packet one (see vless.cpp for why XUDP is not the answer here).
+        { const auto clashEncoding = QString::fromStdString(object.packet_encoding);
+          packet_encoding = Configs::vPacketEncoding.contains(clashEncoding) && !clashEncoding.isEmpty()
+                                ? clashEncoding
+                                : QStringLiteral("packetaddr"); }
 
         tls->ParseFromClash(object);
         transport->ParseFromClash(object);

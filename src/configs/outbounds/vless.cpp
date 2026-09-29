@@ -52,7 +52,16 @@ namespace Configs {
         outbound::ParseFromClash(object);
         uuid = QString::fromStdString(object.uuid);
         if (!object.flow.empty()) flow = QString::fromStdString(object.flow);
-        packet_encoding = QString::fromStdString(object.packet_encoding);
+        // Clash subscriptions never spell out packet-encoding, so an empty value means "client
+        // default". mihomo answers that with XUDP; this fork's sing-box XUDP broke streams against
+        // Vision servers in testing (write on closed stream, TCP hangs), so use packetaddr here:
+        // it is the Xray-native UDP framing, supported everywhere Vision is, and strictly better
+        // than the legacy per-packet framing the empty string selects (4-5x game-UDP slowdown).
+        // Explicit values (including an intentional empty choice) are still honoured.
+        { const auto clashEncoding = QString::fromStdString(object.packet_encoding);
+          packet_encoding = Configs::vPacketEncoding.contains(clashEncoding) && !clashEncoding.isEmpty()
+                                ? clashEncoding
+                                : QStringLiteral("packetaddr"); }
 
         tls->ParseFromClash(object);
         transport->ParseFromClash(object);
