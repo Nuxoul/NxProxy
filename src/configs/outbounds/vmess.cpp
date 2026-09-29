@@ -121,13 +121,12 @@ namespace Configs {
         uuid = QString::fromStdString(object.uuid);
         if (!object.cipher.empty()) security = QString::fromStdString(object.cipher);
         alter_id = object.alterId;
-        // Same rule as VLESS: an absent packet-encoding means the Xray-native framing, not the
-        // legacy per-packet one (see vless.cpp for why XUDP is not the answer here).
+        // Same rule as VLESS (see vless.cpp): absent means xudp. packetaddr was measured broken
+        // against these servers (game stuck at loading), legacy "" measured 4-5x slower.
         { const auto clashEncoding = QString::fromStdString(object.packet_encoding);
           packet_encoding = Configs::vPacketEncoding.contains(clashEncoding) && !clashEncoding.isEmpty()
                                 ? clashEncoding
-                                : QStringLiteral("packetaddr"); }
-
+                                : QStringLiteral("xudp"); }
         tls->ParseFromClash(object);
         transport->ParseFromClash(object);
         multiplex->ParseFromClash(object);
