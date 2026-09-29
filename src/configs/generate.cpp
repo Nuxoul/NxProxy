@@ -6,8 +6,6 @@
 #include <QApplication>
 #include <QFileInfo>
 #include <QHostAddress>
-#include <QNetworkInterface>
-#include <QUdpSocket>
 #include <QMutex>
 #include <QRegularExpression>
 #include <QScopeGuard>
@@ -216,51 +214,6 @@ namespace Configs {
             QList<coreBridgeConfig> xrayToSingBridges;
             std::shared_ptr<BuildConfigResult> result = std::make_shared<BuildConfigResult>();
         };
-
-        // Physical NIC for TUN loop protection. A UDP connect() sends nothing but reveals the
-        // local address; matching it against live interfaces mirrors Swell's
-        // TunService.DetectDefaultOutboundInterfaceName. Empty means "unknown": callers then
-        // emit exactly what they emitted before this change.
-        QString physicalOutboundInterface() {
-            QUdpSocket probe;
-            probe.connectToHost(QHostAddress(QStringLiteral("8.8.8.8")), 53);
-            if (!probe.waitForConnected(500)) return {};
-            const QHostAddress local = probe.localAddress();
-            probe.close();
-            if (local.isNull()) return {};
-            const auto skipName = [](const QString &name) {
-                static const char *const blocked[] = {"tun",      "wintun",   "singbox",  "sing-box",
-                                                      "loopback", "pseudo",   "virtualbox", "vmware",
-                                                      "hyper-v",  "vethernet"};
-                const QString lowered = name.toLower();
-                for (const char *b : blocked) {
-                    if (lowered.contains(QLatin1String(b))) return true;
-                }
-                return false;
-            };
-            for (const QNetworkInterface &nic : QNetworkInterface::allInterfaces()) {
-                if (!(nic.flags() & QNetworkInterface::IsUp) || !(nic.flags() & QNetworkInterface::IsRunning)) continue;
-                if (nic.flags() & QNetworkInterface::IsLoopBack) continue;
-                if (skipName(nic.name()) || skipName(nic.humanReadableName())) continue;
-                for (const QNetworkAddressEntry &entry : nic.addressEntries()) {
-                    // humanReadableName is the OS display name ("以太网"), the same form Swell
-                    // passes from .NET and sing-box resolves.
-                    if (entry.ip() == local) return nic.humanReadableName();
-                }
-            }
-            return {};
-        }
-
-        // The direct outbound, bound to the physical NIC under TUN so its traffic cannot be
-        // re-captured (second layer next to route_exclude_address).
-        QJsonObject directOutboundObject(const BuildContext &ctx) {
-            QJsonObject direct{{"type", "direct"}, {"tag", tags::direct}};
-            if (ctx.tunEnabled && !ctx.forTest) {
-                const QString iface = physicalOutboundInterface();
-                if (!iface.isEmpty()) direct["bind_interface"] = iface;
-            }
-            return direct;
-        }
 
         QString bridgeIngressMismatch(const BuildContext &ctx) {
             if (ctx.xrayToSingBridges.size() != ctx.singIngressTags.size())
@@ -2073,7 +2026,10 @@ namespace Configs {
             }
             ctx.result->coreConfig["inbounds"] = inboundArr;
 
-            ctx.outbounds.append(directOutboundObject(ctx));
+            ctx.outbounds.append(QJsonObject{
+            {"type", "direct"},
+            {"tag", tags::direct}
+            });
 
             if (ctx.l3Bridge) {
                 ctx.outbounds.append(QJsonObject{
@@ -2362,12 +2318,6 @@ namespace Configs {
                                         {"server", tags::dnsDirect},
                                         {"strategy", getDirectDomainStrategy()}};
             if (settings.spmode_vpn && !route.contains("auto_detect_interface")) route["auto_detect_interface"] = true;
-            // Default direct/final paths to the physical NIC under TUN (Swell parity). Raw full
-            // configs own their route object and are left alone.
-            if (ctx.tunEnabled && !ctx.forTest && !routeChain->isRaw && !route.contains("default_interface")) {
-                const QString iface = physicalOutboundInterface();
-                if (!iface.isEmpty()) route["default_interface"] = iface;
-            }
 
             ctx.result->coreConfig["route"] = route;
         }
@@ -2891,7 +2841,7 @@ namespace Configs {
             res->error = ctx.error;
             return res;
         }
-        ctx.outbounds << directOutboundObject(ctx);
+        ctx.outbounds << QJsonObject{{"type", "direct"}, {"tag", tags::direct}};
         ctx.result->coreConfig["outbounds"] = ctx.outbounds;
         ctx.result->coreConfig["endpoints"] = ctx.endpoints;
         QJsonArray inboundArr;
