@@ -107,7 +107,10 @@ namespace Configs {
         if (object.contains("global_padding")) global_padding = object["global_padding"].toBool();
         if (object.contains("global-padding")) global_padding = object["global-padding"].toBool();
         if (object.contains("authenticated_length")) authenticated_length = object["authenticated_length"].toBool();
-        if (object.contains("packet_encoding")) packet_encoding = object["packet_encoding"].toString();
+        // Same as VLESS: an empty stored value is "unset", and the field initialiser's XUDP default is
+        // the right answer, so old imports heal on load instead of keeping the legacy framing.
+        if (object.contains("packet_encoding") && !object["packet_encoding"].toString().isEmpty())
+            packet_encoding = object["packet_encoding"].toString();
         if (object.contains("tls")) tls->ParseFromJson(object["tls"].toObject());
         if (object.contains("transport")) transport->ParseFromJson(object["transport"].toObject());
         if (object.contains("multiplex")) multiplex->ParseFromJson(object["multiplex"].toObject());
@@ -121,7 +124,12 @@ namespace Configs {
         uuid = QString::fromStdString(object.uuid);
         if (!object.cipher.empty()) security = QString::fromStdString(object.cipher);
         alter_id = object.alterId;
-        packet_encoding = QString::fromStdString(object.packet_encoding);
+        // Same rule as VLESS: an absent packet-encoding means the client default (XUDP), not the legacy
+        // per-packet framing that the empty string would select.
+        const auto clashEncoding = QString::fromStdString(object.packet_encoding);
+        packet_encoding = Configs::vPacketEncoding.contains(clashEncoding) && !clashEncoding.isEmpty()
+                              ? clashEncoding
+                              : QStringLiteral("xudp");
 
         tls->ParseFromClash(object);
         transport->ParseFromClash(object);

@@ -39,7 +39,10 @@ namespace Configs {
         outbound::ParseFromJson(object);
         if (object.contains("uuid")) uuid = object["uuid"].toString();
         if (object.contains("flow")) flow = object["flow"].toString();
-        if (object.contains("packet_encoding")) packet_encoding = object["packet_encoding"].toString();
+        // An empty value in a stored profile means "unset", which the field initialiser answers with
+        // XUDP. Skipping it here heals every node that was imported before the default was honoured.
+        if (object.contains("packet_encoding") && !object["packet_encoding"].toString().isEmpty())
+            packet_encoding = object["packet_encoding"].toString();
         if (object.contains("tls")) tls->ParseFromJson(object["tls"].toObject());
         if (object.contains("transport")) transport->ParseFromJson(object["transport"].toObject());
         if (object.contains("multiplex")) multiplex->ParseFromJson(object["multiplex"].toObject());
@@ -52,7 +55,14 @@ namespace Configs {
         outbound::ParseFromClash(object);
         uuid = QString::fromStdString(object.uuid);
         if (!object.flow.empty()) flow = QString::fromStdString(object.flow);
-        packet_encoding = QString::fromStdString(object.packet_encoding);
+        // An entry that does not spell out packet-encoding wants the client default, which is XUDP for
+        // this protocol (the share-link parser and the field initialiser both say so). Passing the empty
+        // string through selects the legacy per-packet framing instead, which is ruinous for UDP under
+        // load: the same node then measures several times slower here than in Clash.
+        const auto clashEncoding = QString::fromStdString(object.packet_encoding);
+        packet_encoding = Configs::vPacketEncoding.contains(clashEncoding) && !clashEncoding.isEmpty()
+                              ? clashEncoding
+                              : QStringLiteral("xudp");
 
         tls->ParseFromClash(object);
         transport->ParseFromClash(object);
