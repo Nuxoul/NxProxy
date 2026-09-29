@@ -1219,6 +1219,34 @@ namespace Configs {
                     for (auto item: tun.directIPSets) routeExcludeSets << item;
                 }
 
+                // Node servers must stay reachable without the tunnel. A dial that lands back in the Tun
+                // is re-routed (or proxied through another node), which shows up as i/o timeouts and
+                // multi-second stalls while every latency test still looks fine. Clash configs spell this
+                // out as tun.route-exclude-address; derive it from the profile list so it cannot be
+                // forgotten, and keep it independent of enable_tun_routing (that switch also folds
+                // domain rule-sets into the exclusion list, which breaks routing outright).
+                for (const int endpointID : [&] {
+                         QList<int> ids;
+                         const auto group = dataManager->groupsRepo->GetGroup(ctx.ent->gid);
+                         if (group == nullptr) return ids;
+                         ids = group->profiles;
+                         if (group->front_proxy_id >= 0) ids << group->front_proxy_id;
+                         if (group->landing_proxy_id >= 0) ids << group->landing_proxy_id;
+                         return ids;
+                     }())
+                {
+                    const auto endpoints = getProfile(endpointID);
+                    if (endpoints == nullptr || endpoints->outbound == nullptr) continue;
+                    const auto endpointAddress = endpoints->outbound->GetAddress();
+                    if (endpointAddress.isEmpty()) continue;
+                    const QHostAddress endpointIP(endpointAddress);
+                    // A hostname endpoint is resolved at dial time, so there is nothing to exclude here.
+                    if (endpointIP.isNull()) continue;
+                    const QString endpointCIDR =
+                            endpointIP.toString() + (endpointIP.protocol() == QAbstractSocket::IPv6Protocol ? "/128" : "/32");
+                    if (!excludedRanges.contains(endpointCIDR)) excludedRanges << endpointCIDR;
+                }
+
                 // macOS puts the system DNS inside the Tun subnet, so bypassing that range black-holes every query (#1738).
                 if (ctx.os == Darwin) excludedRanges = subtractPrefix(excludedRanges, tunIPv4CIDR);
                 for (const auto &range : excludedRanges) routeExcludeAddrs << range;
