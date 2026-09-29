@@ -220,8 +220,28 @@ namespace Configs {
         bool adblock_enable = false;
 
         // VPN
-        bool fake_dns = false;
+        // Fake-IP is on for new installs: the resolver answers with a placeholder address and the
+        // outbound carries the domain, so geo-DNS answers come from where the exit actually is. It
+        // only applies to the TUN inbound, which is where the DNS traffic is ours to answer.
+        bool fake_dns = true;
         bool fakeip_disable_ipv6 = false;
+        // Names that must keep their real address: LAN, Windows reachability probes, NTP, Xbox
+        // sign-in, STUN. Same line syntax as the other DNS rule lists.
+        QStringList fakeip_exclude = {
+            "suffix:lan",
+            "suffix:local",
+            "suffix:localdomain",
+            "suffix:home.arpa",
+            "domain:localhost",
+            "suffix:msftconnecttest.com",
+            "suffix:msftncsi.com",
+            "suffix:xboxlive.com",
+            "suffix:microsoft.com",
+            "suffix:ntp.org",
+            "suffix:pool.ntp.org",
+            "regex:^time\\..*",
+            "regex:^stun\\..*",
+        };
         bool enable_tun_routing = false;
 #ifdef Q_OS_MACOS
         QString vpn_implementation = "gvisor";

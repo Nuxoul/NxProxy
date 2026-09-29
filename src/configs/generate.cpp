@@ -1087,7 +1087,22 @@ namespace Configs {
                 }
             }
 
-            if (settings.fake_dns) {
+
+            if (dns.needDirectDnsRules) {
+                appendDnsRoutingRules(rules, dns.direct, tags::dnsDirect, settings.direct_dns_disable_ipv6);
+            }
+
+            // Fake-IP answers belong to the names that go through the proxy, and sing-box takes the
+            // first matching DNS rule. The old position answered every A/AAAA query, which hid the
+            // direct set from the resolver and pulled domestic names into the tunnel; the block now
+            // sits after every real-address rule but before the proxy-set rule, which answers real
+            // addresses and would otherwise defeat the point of handing the domain to the exit.
+            if (settings.fake_dns && ctx.tunEnabled) {
+                // LAN, Windows probes, NTP, Xbox, STUN: these have to keep their real address.
+                DomainSelectors fakeExclude;
+                parseSelectorList(settings.fakeip_exclude, sinkFor(fakeExclude));
+                appendDnsRoutingRules(rules, fakeExclude, tags::dnsDirect, settings.direct_dns_disable_ipv6);
+
                 QJsonObject fakeServer{
                         {"tag", tags::dnsFake},
                         {"type", "fakeip"},
@@ -1105,10 +1120,6 @@ namespace Configs {
                      {"server", tags::dnsFake}
                 };
                 independentCache = true;
-            }
-
-            if (dns.needDirectDnsRules) {
-                appendDnsRoutingRules(rules, dns.direct, tags::dnsDirect, settings.direct_dns_disable_ipv6);
             }
 
             // A test box builds no dns-remote server at all, so its fall-through goes out direct.
@@ -2298,7 +2309,9 @@ namespace Configs {
             // enabled is unconditional: the same file backs the remote rule-set cache and the auto-selector's last pick.
             experimentalObj["cache_file"] = QJsonObject{
                 {"enabled", true},
-                {"store_fakeip", settings.dns_persist_cache},
+                // Fake-IP records have to survive a core restart: a client still holding an old
+                // placeholder address would otherwise fail with "missing fakeip record".
+                {"store_fakeip", settings.dns_persist_cache || settings.fake_dns},
                 {"store_dns", settings.dns_persist_cache}
             };
 

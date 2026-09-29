@@ -80,6 +80,8 @@ private:
     QShortcut* deleteShortcut;
 
     AutoCompleteTextEdit* rule_editor;
+
+    AutoCompleteTextEdit* fakeip_exclude_editor;
 public slots:
     void accept() override;
 

@@ -775,6 +775,9 @@ For more information, see the document &quot;Configuration/DNS&quot;.</string>
            <layout class="QHBoxLayout" name="horizontalLayout_6">
             <item>
              <widget class="QCheckBox" name="enable_fakeip">
+              <property name="toolTip">
+               <string>Answer proxied names with a placeholder address and let the exit resolve the domain, so geo-DNS services (games, streaming) pick a server near the exit. Applies in TUN mode only.</string>
+              </property>
               <property name="text">
                <string>Enable FakeIP</string>
               </property>
@@ -791,6 +794,31 @@ For more information, see the document &quot;Configuration/DNS&quot;.</string>
              </widget>
             </item>
            </layout>
+          </item>
+          <item row="9" column="0" colspan="4">
+           <widget class="QLabel" name="fakeip_exclude_l">
+            <property name="text">
+             <string>FakeIP exclude</string>
+            </property>
+            <property name="toolTip">
+             <string>Names listed here keep their real address instead of a fake one, so LAN, Windows reachability probes, NTP, Xbox sign-in and STUN keep working.
+
+One rule per line, same prefixes as the other DNS lists: domain:, suffix:, keyword:, regex:, ruleset:. Only used while FakeIP is on and the tunnel owns DNS (TUN mode).</string>
+            </property>
+            <property name="buddy">
+             <cstring>fakeip_exclude</cstring>
+            </property>
+           </widget>
+          </item>
+          <item row="10" column="0" colspan="4">
+           <widget class="QTextEdit" name="fakeip_exclude">
+            <property name="maximumSize">
+             <size>
+              <width>16777215</width>
+              <height>90</height>
+             </size>
+            </property>
+           </widget>
           </item>
          </layout>
         </widget>

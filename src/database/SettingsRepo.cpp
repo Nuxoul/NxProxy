@@ -202,6 +202,7 @@ namespace Configs {
         stringListMap = {
             {"dns_server_rules",         &dns_server_rules},
             {"dns_predefined_rules",     &dns_predefined_rules},
+            {"fakeip_exclude",           &fakeip_exclude},
             {"extra_core_paths",         &extraCorePaths},
             {"log_include_keyword",      &log_include_keyword},
             {"log_include_regex",        &log_include_regex},

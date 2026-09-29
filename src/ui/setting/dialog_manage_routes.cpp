@@ -410,6 +410,14 @@ DialogManageRoutes::DialogManageRoutes(QWidget *parent) : QDialog(parent), ui(ne
     ui->dnshijack_rules_l->setBuddy(rule_editor);
     rule_editor->setPlainText(Configs::dataManager->settingsRepo->dns_server_rules.join("\n"));
     ui->dnshijack_rules->hide();
+
+    fakeip_exclude_editor = new AutoCompleteTextEdit("", ruleItems, this);
+    ui->gridLayout->replaceWidget(ui->fakeip_exclude, fakeip_exclude_editor);
+    ui->fakeip_exclude_l->setBuddy(fakeip_exclude_editor);
+    fakeip_exclude_editor->setPlainText(Configs::dataManager->settingsRepo->fakeip_exclude.join("\n"));
+    fakeip_exclude_editor->setEnabled(ui->enable_fakeip->isChecked());
+    ui->fakeip_exclude->hide();
+    connect(ui->enable_fakeip, &QCheckBox::toggled, fakeip_exclude_editor, &QWidget::setEnabled);
 #ifndef Q_OS_LINUX
     ui->dnshijack_listenport->setVisible(false);
     ui->dnshijack_listenport_l->setVisible(false);
@@ -541,6 +549,13 @@ void DialogManageRoutes::accept() {
     Configs::dataManager->settingsRepo->dns_final_out = ui->dns_final_out->currentText();
     Configs::dataManager->settingsRepo->fake_dns = ui->enable_fakeip->isChecked();
     Configs::dataManager->settingsRepo->fakeip_disable_ipv6 = ui->fakeip_disable_ipv6->isChecked();
+    if (fakeip_exclude_editor != nullptr) {
+        QStringList fakeipExcludeRules;
+        for (const auto& rawLine : fakeip_exclude_editor->toPlainText().split("\n")) {
+            if (!rawLine.trimmed().isEmpty()) fakeipExcludeRules.append(rawLine.trimmed());
+        }
+        Configs::dataManager->settingsRepo->fakeip_exclude = fakeipExcludeRules;
+    }
     Configs::dataManager->settingsRepo->enable_dns_routing = ui->enable_dns_routing->isChecked();
     Configs::dataManager->settingsRepo->dns_use_hosts = ui->respect_hosts->isChecked();
     Configs::dataManager->settingsRepo->dns_predefined_enable = predefined_dns_enabled;
