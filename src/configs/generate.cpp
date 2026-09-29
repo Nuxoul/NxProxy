@@ -1235,7 +1235,11 @@ namespace Configs {
                          return ids;
                      }())
                 {
-                    const auto endpoints = getProfile(endpointID);
+                    // NOTE: read straight from the repo, not through getProfile(): the latter
+                    // records every touched id into the running-config profile set, which would
+                    // mark all group members as in-use (spurious restart prompts when editing an
+                    // idle node).
+                    const auto endpoints = dataManager->profilesRepo->GetProfile(endpointID);
                     if (endpoints == nullptr || endpoints->outbound == nullptr) continue;
                     const auto endpointAddress = endpoints->outbound->GetAddress();
                     if (endpointAddress.isEmpty()) continue;
