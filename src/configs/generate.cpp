@@ -615,9 +615,15 @@ namespace Configs {
                         if (usesXrayCore(member)) ctx.proxyUsesXray = true;
                         suffix++;
                     }
-                    if (selectorGroup.members.isEmpty() || !selectorGroup.members.contains(selectorGroup.selectedID)) {
-                        ctx.error = QObject::tr("Selector %1 has no usable members or its default member is invalid").arg(neededEnt->name);
+                    if (selectorGroup.members.isEmpty()) {
+                        ctx.error = QObject::tr("Selector %1 has no usable members").arg(neededEnt->name);
                         return;
+                    }
+                    // A stored pick can outlive the profile it names: deleting the selected node leaves
+                    // its id in `members`, so the load-time repair never fires. Fall back to the first
+                    // usable member — refusing to build would leave the user unable to connect at all.
+                    if (!selectorGroup.members.contains(selectorGroup.selectedID)) {
+                        selectorGroup.selectedID = selectorGroup.members.first();
                     }
                     preReqs.routing.outboundMap[item] = QString("selector-%1").arg(item);
                     preReqs.routing.selectorGroups.append(selectorGroup);
@@ -2287,7 +2293,10 @@ namespace Configs {
                     {"network", QJsonArray{"udp"}},
                     {"port", QJsonArray{3478, 5349, 19302, 19303, 19304, 19305, 19306, 19307, 19308, 19309}},
                 };
-                if (settings.stun_udp_policy == 2) {
+                // A profile that ends in REJECT has no tunnel to hand STUN to: `finalTag` is `direct`
+                // there, so "route" would give the real address to the STUN server — the exact leak this
+                // guard exists to stop. Reject instead.
+                if (settings.stun_udp_policy == 2 || (!routeChain->isRaw && defOut == blockID)) {
                     stunRule["action"] = "reject";
                 } else {
                     stunRule["action"] = "route";

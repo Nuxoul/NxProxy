@@ -39,7 +39,13 @@ namespace Configs {
         outbound::ParseFromJson(object);
         if (object.contains("uuid")) uuid = object["uuid"].toString();
         if (object.contains("flow")) flow = object["flow"].toString();
-        if (object.contains("packet_encoding")) packet_encoding = object["packet_encoding"].toString();
+        // An empty stored value means "not set": leaving the header default (xudp) in place lets nodes
+        // imported before this default existed heal on the next load instead of staying on the framing
+        // that measured 4-5x slower. Same rule as ParseFromClash below.
+        if (object.contains("packet_encoding")) {
+            const QString stored = object["packet_encoding"].toString();
+            if (!stored.isEmpty()) packet_encoding = stored;
+        }
         if (object.contains("tls")) tls->ParseFromJson(object["tls"].toObject());
         if (object.contains("transport")) transport->ParseFromJson(object["transport"].toObject());
         if (object.contains("multiplex")) multiplex->ParseFromJson(object["multiplex"].toObject());
@@ -56,7 +62,8 @@ namespace Configs {
         // default". Measured on 2026-09-29 against this subscription's Vision servers: packetaddr
         // breaks the game entirely (no UDP at all, client stuck at loading), legacy "" framing
         // works but game UDP runs 4-5x slower than mihomo, and xudp works (game loads, ~200ms).
-        // Explicit values (including an intentional empty choice) are still honoured.
+        // An empty value is indistinguishable from an absent one in Clash, so both mean "unset" and
+        // take the client default above instead of pinning the slower legacy framing.
         { const auto clashEncoding = QString::fromStdString(object.packet_encoding);
           packet_encoding = Configs::vPacketEncoding.contains(clashEncoding) && !clashEncoding.isEmpty()
                                 ? clashEncoding

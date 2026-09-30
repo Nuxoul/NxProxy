@@ -331,6 +331,7 @@ void MainWindow::profile_start(int _id) {
 
         Configs::dataManager->settingsRepo->UpdateStartedId(ent->id);
         // Must land after the stop this start may have run first: that stop clears the map.
+        Stats::SetVpnEndpointProfiles(result->vpnEndpointProfiles);
         Stats::SetOutboundDisplayNames(result->outboundDisplayNames);
         Configs::SetSelectorMemberTags(result->selectorMemberTags);
         // The core keeps its own copy of each group's pick (cache.db) and prefers it over the config's
@@ -342,7 +343,16 @@ void MainWindow::profile_start(int _id) {
             const auto memberTag = selectorIt->constFind(selector->selectedID);
             if (memberTag == selectorIt->constEnd()) continue;
             bool rpcOK = false;
-            defaultClient->SelectOutbound(&rpcOK, QString("selector-%1").arg(selectorIt.key()), *memberTag);
+            const QString error = defaultClient->SelectOutbound(&rpcOK, QString("selector-%1").arg(selectorIt.key()), *memberTag);
+            if (!rpcOK || !error.isEmpty()) {
+                // Not fatal: the core then keeps its own cached pick, which can disagree with the node the
+                // group displays. Say so instead of failing silently.
+                runOnUiThread([=, this] {
+                    MW_show_log(tr("Failed to push the selected node of strategy group %1 to the core: %2")
+                                    .arg(selectorProfile->name,
+                                         error.isEmpty() ? tr("the core rejected the member") : error));
+                });
+            }
         }
         Configs::SetRunningProfiles(result->involvedProfiles);
         running = ent;

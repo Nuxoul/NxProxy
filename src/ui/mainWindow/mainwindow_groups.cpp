@@ -208,11 +208,13 @@ void MainWindow::show_group_tab_menu(const QPoint &p) {
     }
     if (clickedGroup != nullptr) {
         const int groupID = clickedGroup->id;
+        // A strategy row shows the node it routes through, so a group test has to refresh that panel too;
+        // the tab/menu entries in mainwindow_setup.cpp pair the same two calls.
         connect(menu.addAction(tr("Url Test selected Group")), &QAction::triggered, this, [=,this]{
-            testRunner->runUrlTests(clickedGroup->Profiles(), [this, groupID] { resortCurrentGroupAfterTest(groupID); });
+            testRunner->runUrlTests(clickedGroup->Profiles(), [this, groupID] { resortCurrentGroupAfterTest(groupID); refresh_selector_panel(); });
         });
         connect(menu.addAction(tr("Speed Test selected Group")), &QAction::triggered, this, [=,this]{
-            testRunner->runSpeedTests(clickedGroup->Profiles(), false, [this, groupID] { resortCurrentGroupAfterTest(groupID); });
+            testRunner->runSpeedTests(clickedGroup->Profiles(), false, [this, groupID] { resortCurrentGroupAfterTest(groupID); refresh_selector_panel(); });
         });
     }
     menu.exec(ui->tabWidget->tabBar()->mapToGlobal(p));

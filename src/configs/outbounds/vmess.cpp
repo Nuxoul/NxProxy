@@ -107,7 +107,12 @@ namespace Configs {
         if (object.contains("global_padding")) global_padding = object["global_padding"].toBool();
         if (object.contains("global-padding")) global_padding = object["global-padding"].toBool();
         if (object.contains("authenticated_length")) authenticated_length = object["authenticated_length"].toBool();
-        if (object.contains("packet_encoding")) packet_encoding = object["packet_encoding"].toString();
+        // An empty stored value means "not set": keeping the header default (xudp) lets nodes imported
+        // before this default existed heal on load. Same rule as ParseFromClash below.
+        if (object.contains("packet_encoding")) {
+            const QString stored = object["packet_encoding"].toString();
+            if (!stored.isEmpty()) packet_encoding = stored;
+        }
         if (object.contains("tls")) tls->ParseFromJson(object["tls"].toObject());
         if (object.contains("transport")) transport->ParseFromJson(object["transport"].toObject());
         if (object.contains("multiplex")) multiplex->ParseFromJson(object["multiplex"].toObject());
