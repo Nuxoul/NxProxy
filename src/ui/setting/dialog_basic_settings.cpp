@@ -234,6 +234,7 @@ DialogBasicSettings::DialogBasicSettings(QWidget *parent)
     D_LOAD_STRING(sub_custom_hwid_params)
     D_LOAD_INT_ENABLE(sub_auto_update, sub_auto_update_enable)
     D_LOAD_INT_ENABLE(route_auto_update, route_auto_update_enable)
+    D_LOAD_INT_ENABLE(auto_latency_test, auto_latency_test_enable)
     auto details = GetDeviceDetails();
 	ui->sub_send_hwid->setToolTip(
         ui->sub_send_hwid->toolTip()
@@ -451,6 +452,7 @@ void DialogBasicSettings::accept() {
     D_SAVE_STRING(sub_custom_hwid_params)
     D_SAVE_INT_ENABLE(sub_auto_update, sub_auto_update_enable)
     D_SAVE_INT_ENABLE(route_auto_update, route_auto_update_enable)
+    D_SAVE_INT_ENABLE(auto_latency_test, auto_latency_test_enable)
 
     Configs::dataManager->settingsRepo->disable_traffic_stats = ui->disable_stats->isChecked();
     Configs::dataManager->settingsRepo->core_dns_in_port = ui->dns_in_port->text().trimmed().toInt();

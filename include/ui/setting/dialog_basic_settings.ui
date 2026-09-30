@@ -341,6 +341,30 @@
             </item>
            </layout>
           </item>
+          <item>
+           <layout class="QHBoxLayout" name="horizontalLayout_auto_latency_test">
+            <item>
+             <widget class="QCheckBox" name="auto_latency_test_enable">
+              <property name="text">
+               <string>Enable</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="label_auto_latency_test_interval">
+              <property name="toolTip">
+               <string>While Throne is connected, every distinct node is tested once per interval, then each group is re-sorted by the fresh latency. A test that is already running is never interrupted.</string>
+              </property>
+              <property name="text">
+               <string>Auto test interval (minute)</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLineEdit" name="auto_latency_test"/>
+            </item>
+           </layout>
+          </item>
          </layout>
         </widget>
        </item>

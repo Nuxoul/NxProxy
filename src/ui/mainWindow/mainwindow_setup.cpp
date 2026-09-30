@@ -6,6 +6,7 @@
 #include "include/ui/mainWindow/TestRunner.h"
 
 #include <QMenu>
+#include <QSet>
 
 #include "include/configs/sub/GroupUpdater.hpp"
 #include "include/configs/sub/RouteUpdater.hpp"
@@ -1205,6 +1206,50 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                 Configs::dataManager->settingsRepo->Save();
             },
             [] { UI_update_all_remote_routes(true); },
+        });
+        // A short interval is the point of this job, so unlike the two above nothing is clamped away.
+        runner->Add({
+            tr("node latency test"),
+            [] {
+                const int minutes = Configs::dataManager->settingsRepo->auto_latency_test;
+                return minutes > 0 ? minutes : 0;
+            },
+            [] { return Configs::dataManager->settingsRepo->auto_latency_test_last; },
+            [](qint64 t) {
+                Configs::dataManager->settingsRepo->auto_latency_test_last = t;
+                Configs::dataManager->settingsRepo->Save();
+            },
+            [this] {
+                // Only while connected, and never on top of a running test (a manual one or the previous sweep).
+                if (running == nullptr || testRunner->isRunning()) return;
+                QSet<int> distinct;
+                for (const int gid : Configs::dataManager->groupsRepo->GetGroupsTabOrder()) {
+                    const auto group = Configs::dataManager->groupsRepo->GetGroup(gid);
+                    if (group == nullptr) continue;
+                    for (const int id : group->Profiles()) distinct.insert(id);
+                }
+                if (distinct.isEmpty()) return;
+                const QList<int> targets(distinct.constBegin(), distinct.constEnd());
+                const bool descending = testResultSortDescending;
+                testRunner->runUrlTests(targets, [this, descending] {
+                    // The same re-sort a manual group test performs, applied to every group that was just measured.
+                    runOnNewThread([this, descending] {
+                        for (const int gid : Configs::dataManager->groupsRepo->GetGroupsTabOrder()) {
+                            const auto group = Configs::dataManager->groupsRepo->GetGroup(gid);
+                            if (group == nullptr) continue;
+                            GroupSortAction action;
+                            action.method = GroupSortMethod::ByTestResult;
+                            action.descending = descending;
+                            if (!group->SortProfiles(action)) continue;
+                            Configs::dataManager->groupsRepo->Save(group);
+                        }
+                        runOnUiThread([this] {
+                            refresh_proxy_list({}, true);
+                            refresh_selector_panel();
+                        });
+                    });
+                });
+            },
         });
     }
 

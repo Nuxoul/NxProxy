@@ -37,26 +37,19 @@ Total speed: %5/s↑ %6/s↓</source>
 Connections: %2
 Process: %3
 Protocol: %4
-Outbound: %5
-Total traffic: %6↑ %7↓
-Total speed: %8/s↑ %9/s↓</source>
-        <translation>目标: %1
-连接数: %2
-进程: %3
-协议: %4
-出站: %5
-流量合计: %6↑ %7↓
-速度合计: %8/s↑ %9/s↓</translation>
+Strategy / node: %5
+Core outbound: %6
+Total traffic: %7↑ %8↓
+Total speed: %9/s↑ %10/s↓</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Destination: %1
 Process: %2
 Protocol: %3
-Outbound: %4</source>
-        <translation>目标: %1
-进程: %2
-协议: %3
-出站: %4</translation>
+Strategy / node: %4
+Core outbound: %5</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Process / Destination</source>
@@ -105,6 +98,49 @@ Outbound: %4</source>
     <message>
         <source>Click to sort by speed; right-click to choose total/down/up</source>
         <translation>点击表示按速度排序；右击选择“合计(Σ)/下载(↓)/上传(↑)&quot;</translation>
+    </message>
+</context>
+<context>
+    <name>CoreDiagnostics</name>
+    <message>
+        <source>The core is not running.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Could not reach the core. See the log for details.</source>
+        <translation type="unfinished">无法访问核心。查看日志了解详情。</translation>
+    </message>
+    <message>
+        <source>The core could not capture the profile: %1</source>
+        <translation type="unfinished">核心无法捕获剖析文件: %1</translation>
+    </message>
+    <message>
+        <source>The core returned an empty profile.</source>
+        <translation type="unfinished">该核心返回了一个空剖析文件。</translation>
+    </message>
+    <message>
+        <source>Could not save %1: %2</source>
+        <translation type="unfinished">无法保存 %1: %2</translation>
+    </message>
+    <message>
+        <source>Performance profile saved to %1</source>
+        <translation type="unfinished">性能剖析数据已保存到 %1</translation>
+    </message>
+    <message>
+        <source>The performance profile was saved (%1).</source>
+        <translation type="unfinished">性能剖析已保存 (%1)。</translation>
+    </message>
+    <message>
+        <source>Performance profile failed: %1</source>
+        <translation type="unfinished">性能剖析失败: %1</translation>
+    </message>
+    <message>
+        <source>Performance profile</source>
+        <translation type="unfinished">性能剖析</translation>
+    </message>
+    <message>
+        <source>Show in folder</source>
+        <translation type="unfinished">在文件夹中显示</translation>
     </message>
 </context>
 <context>
@@ -186,9 +222,9 @@ Outbound: %4</source>
     </message>
     <message>
         <source>Keep the selected profile in use instead of letting the ranking choose. Useful when several profiles measure much the same and you prefer one of them.
+
 It stays a preference, not a lock: if that profile stops working the selector still moves on, and comes back to your choice once it recovers.</source>
-        <translation>保持当前选定的配置档(Profile)继续使用中而不是让排名选择。在多个配置档测量结果非常接近而你更偏于使用其中某个的情况下很有用。
-它只是偏好选项，而不是锁定：如果该配置档停止工作，则选择器仍会继续切换，并在其恢复后返回到你的选择。</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Back to automatic</source>
@@ -547,6 +583,38 @@ It stays a preference, not a lock: if that profile stops working the selector st
     <message>
         <source>Enable</source>
         <translation>启用</translation>
+    </message>
+    <message>
+        <source>WebRTC/STUN 使用 UDP：系统代理不覆盖 UDP，而国内 STUN 目标常命中“CN 直连”规则，于是暴露真实 IP。此项会在 CN 直连规则之前接管 STUN/WebRTC 的 UDP 端口。</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>WebRTC/STUN UDP</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Follow rules = 保持现状；Route through proxy = 走当前路由的默认出口；Reject = 直接拒绝（最彻底，但会禁用网页语音/视频通话）。</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Follow rules</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Route through proxy</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Reject</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>While Throne is connected, every distinct node is tested once per interval, then each group is re-sorted by the fresh latency. A test that is already running is never interrupted.</source>
+        <translation>连接期间，每隔设定时间对去重后的全部节点测一轮延迟，随后各分组按新延迟重新排序；正在进行的测试不会被中断。</translation>
+    </message>
+    <message>
+        <source>Auto test interval (minute)</source>
+        <translation>自动测试间隔（分钟）</translation>
     </message>
     <message>
         <source>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Fully disables the traffic aggregation feature (per-config and per-app usage history kept in a separate database, shown in the Traffic Stats dashboard). Does not affect the per-profile traffic counters in the main window.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</source>
@@ -964,10 +1032,9 @@ It stays a preference, not a lock: if that profile stops working the selector st
     <message>
         <source>Backup created successfully:
 %1
+
 Included: %2</source>
-        <translation>备份成功创建:
-%1
-包括: %2</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Restore Failed</source>
@@ -1021,6 +1088,12 @@ Throne will restart to complete the restore.</source>
     <message>
         <source>Failed to restore database: %1</source>
         <translation>恢复数据库失败: %1</translation>
+    </message>
+    <message numerus="yes">
+        <source>Skipped %n routing rule(s) that use conditions this version of Throne does not support.</source>
+        <translation type="unfinished">
+            <numerusform></numerusform>
+        </translation>
     </message>
     <message>
         <source>Restore Complete</source>
@@ -1622,6 +1695,22 @@ Throne will restart to complete the restore.</source>
     <message>
         <source>Extra Core</source>
         <translation>额外核心</translation>
+    </message>
+    <message>
+        <source>Selector</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Add at least one member profile.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Selector members must be unique, valid profiles from the same group; nested groups are not supported.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Choose a default member from this selector.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Already set</source>
@@ -2262,6 +2351,10 @@ For more information, see the document &quot;Configuration/DNS&quot;.</source>
         <translation>默认 DNS 服务器</translation>
     </message>
     <message>
+        <source>Answer proxied names with a placeholder address and let the exit resolve the domain, so geo-DNS services (games, streaming) pick a server near the exit. Applies in TUN mode only.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <source>Enable FakeIP</source>
         <translation>启用 FakeIP</translation>
     </message>
@@ -2272,6 +2365,16 @@ For more information, see the document &quot;Configuration/DNS&quot;.</source>
     <message>
         <source>FakeIP Disable IPv6</source>
         <translation>FakeIP 禁用 IPv6</translation>
+    </message>
+    <message>
+        <source>FakeIP exclude</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Names listed here keep their real address instead of a fake one, so LAN, Windows reachability probes, NTP, Xbox sign-in and STUN keep working.
+
+One rule per line, same prefixes as the other DNS lists: domain:, suffix:, keyword:, regex:, ruleset:. Only used while FakeIP is on and the tunnel owns DNS (TUN mode).</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Advanced</source>
@@ -2359,15 +2462,13 @@ For more information, see the document &quot;Configuration/DNS&quot;.</source>
     </message>
     <message>
         <source>One entry per line, hosts-file syntax:
+
 127.0.0.1 localhost
 10.0.0.5 nas.lan files.lan
 ::1 localhost6
+
 A domain listed with only one address family is answered NXDOMAIN for the other, so the override cannot be bypassed.</source>
-        <translation>每行一条记录，hosts 文件语法:
-127.0.0.1 localhost
-10.0.0.5 nas.lan files.lan
-::1 localhost6
-一个仅配置了一个地址族的域名，对于其它的地址族会回答 NXDOMAIN (Non-Existent Domain 不存在域名)，因此无法绕过该覆盖设置。</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Invalid input</source>
@@ -3097,11 +3198,10 @@ Use a number followed by ns, us, ms, s, m, h or d.</source>
     </message>
     <message>
         <source>If you have trouble starting VPN, you can force reset Core process here.
+
 If still not working, see documentation for more information.
 https://matsuridayo.github.io/n-configuration/#vpn-tun</source>
-        <translation>如果您在启动 Tun 时有问题，可以在这里强制重置 Core 进程。
-如果仍无法工作，请查阅文档以获取更多信息。
-https://matsuridayo.github.io/n-configuration/#vpn-tun</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Reset</source>
@@ -5587,6 +5687,33 @@ Improves hole-punching reliability. Requires IPv4.</source>
     </message>
 </context>
 <context>
+    <name>EditSelector</name>
+    <message>
+        <source>Choose the proxy profiles that belong to this group. Rules can route traffic to this named selector.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Add member</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Remove selected</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Default member:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Selector</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Add at least one valid member profile.</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
     <name>EditShadowSocks</name>
     <message>
         <source>Plugin</source>
@@ -6235,6 +6362,14 @@ Improves hole-punching reliability. Requires IPv4.</source>
         <translation>系统代理</translation>
     </message>
     <message>
+        <source>策略组（选择后查看该组成员）</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>当前策略组成员（点击节点设为该组使用节点）</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <source>Logs</source>
         <translation>日志</translation>
     </message>
@@ -6285,6 +6420,10 @@ Improves hole-punching reliability. Requires IPv4.</source>
     <message>
         <source>New profile</source>
         <translation>新建配置档</translation>
+    </message>
+    <message>
+        <source>Add Selector</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Manage Groups</source>
@@ -6728,9 +6867,16 @@ Improves hole-punching reliability. Requires IPv4.</source>
     </message>
     <message>
         <source>Add this routing profile?
+
 Name: %1</source>
-        <translation>添加这个路由配置档吗?
-名称: %1</translation>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Add this subscription?
+
+Name: %1
+URL: %2</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Note:</source>
@@ -6759,14 +6905,6 @@ Name: %1</source>
     <message>
         <source>The link did not contain a subscription URL.</source>
         <translation>该链接不包含订阅 URL。</translation>
-    </message>
-    <message>
-        <source>Add this subscription?
-Name: %1
-URL: %2</source>
-        <translation>添加这个订阅吗?
-名称: %1
-URL: %2</translation>
     </message>
     <message>
         <source>Tun Settings changed</source>
@@ -6841,20 +6979,8 @@ URL: %2</translation>
         <translation>Geo 资源缺失类别</translation>
     </message>
     <message>
-        <source>The Xray config &quot;%1&quot; needs &quot;%2&quot;, but the installed %3 does not contain it.
-Re-downloading from the same source will not fix this — the data file does not include that category. Set the GeoIP/GeoSite asset URL in Settings to a source that provides &quot;%2&quot;, then delete %3 from the app folder and download it again.</source>
-        <translation>Xray 配置 &quot;%1&quot; 需要 &quot;%2&quot;, 但安装的 %3 不包含它。
-从同一来源重新下载无法修复这个问题 — 数据文件不包含该列表。在「设置」中设置 GeoIP/GeoSite 资源 URL 为一个提供 &quot;%2&quot; 的来源，然后从应用文件夹中删除 %3 并重新下载它。</translation>
-    </message>
-    <message>
         <source>Geo asset files required</source>
         <translation>需要 Geo 资源文件</translation>
-    </message>
-    <message>
-        <source>The Xray config &quot;%1&quot; uses geoip/geosite routing rules, but the required data files (geoip.dat / geosite.dat) are not installed.
-Download them now?</source>
-        <translation>Xray 配置 &quot;%1&quot; 使用了 geoip/geosite 路由规则，但未安装所需的数据文件 (geoip.dat / geosite.dat)。
-立即安装它们吗?</translation>
     </message>
     <message>
         <source>Geo asset download failed</source>
@@ -6869,12 +6995,6 @@ Download them now?</source>
         <translation>Geo 资源已安装</translation>
     </message>
     <message>
-        <source>Geo data files were downloaded successfully.
-Please try again.</source>
-        <translation>成功下载过 Geo 数据文件。
-请再试一次。</translation>
-    </message>
-    <message>
         <source>BuildConfig return error</source>
         <translation>BuildConfig 返回错误</translation>
     </message>
@@ -6883,12 +7003,38 @@ Please try again.</source>
         <translation>严格的路由不可用</translation>
     </message>
     <message>
+        <source>The Xray config &quot;%1&quot; needs &quot;%2&quot;, but the installed %3 does not contain it.
+
+Re-downloading from the same source will not fix this — the data file does not include that category. Set the GeoIP/GeoSite asset URL in Settings to a source that provides &quot;%2&quot;, then delete %3 from the app folder and download it again.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>The Xray config &quot;%1&quot; uses geoip/geosite routing rules, but the required data files (geoip.dat / geosite.dat) are not installed.
+
+Download them now?</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Geo data files were downloaded successfully.
+
+Please try again.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Selector</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>This is a proxy group. Start a concrete profile instead; routing rules can target this selector.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <source>Windows could not enable strict routing. Open Tun Settings, disable Strict Route, and start the profile again.
+
 Disabling Strict Route may cause DNS leaks.
+
 Error: %1</source>
-        <translation>Windows 无法启用严格路由。打开 Tun 设置，禁用“严格路由”，并再次启动该配置档。
-禁用严格路由可能导致 DNS 泄露。
-错误: %1</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Tun device misbehaving</source>
@@ -6909,6 +7055,14 @@ Error: %1</source>
     <message>
         <source>[Auto selector] Running the best %1 of %2 ranked profiles.</source>
         <translation>[自动选择器] 正在运行排名最优的 %1 / %2 个配置档。</translation>
+    </message>
+    <message>
+        <source>Failed to push the selected node of strategy group %1 to the core: %2</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>the core rejected the member</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Another profile is starting...</source>
@@ -7041,6 +7195,18 @@ Error: %1</source>
         </translation>
     </message>
     <message>
+        <source>Strategy group %1: member %2 is not in the running config, restart the core to apply it.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Strategy group %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Failed to switch strategy group %1 in the running core: %2</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <source>Type</source>
         <translation>类型</translation>
     </message>
@@ -7121,8 +7287,16 @@ Error: %1</source>
         <translation>路由配置档</translation>
     </message>
     <message>
+        <source>node latency test</source>
+        <translation>节点延迟测试</translation>
+    </message>
+    <message>
         <source>User opted for no privilege req, some features may not work</source>
         <translation>用户选择无权限请求，某些功能可能不起作用</translation>
+    </message>
+    <message>
+        <source>This installation cannot grant the core privileges by itself.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Please give the core root privileges</source>
@@ -7181,6 +7355,14 @@ Error: %1</source>
         <translation>下载更新资源失败</translation>
     </message>
     <message>
+        <source>Proxy:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Direct:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <source>Not Running</source>
         <translation>未在运行</translation>
     </message>
@@ -7195,6 +7377,14 @@ Error: %1</source>
     <message>
         <source>Select mode, double-click or press Enter to select a profile, press ESC to exit.</source>
         <translation>选择模式，双击或按 ENTER 键选择一个配置档，按 ESC 键退出。</translation>
+    </message>
+    <message>
+        <source>Stopped</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Admin</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Connect OK</source>
@@ -7213,8 +7403,8 @@ Error: %1</source>
         <translation>隧道错误</translation>
     </message>
     <message>
-        <source>Testing</source>
-        <translation>测试</translation>
+        <source>No node selected</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Test Result</source>
@@ -7381,17 +7571,6 @@ Error: %1</source>
     </message>
 </context>
 <context>
-    <name>QHotkey</name>
-    <message>
-        <source>Failed to register %1. Error: %2</source>
-        <translation>注册 %1 失败。 错误: %2</translation>
-    </message>
-    <message>
-        <source>Failed to unregister %1. Error: %2</source>
-        <translation>注销注册 %1 失败。错误: %2</translation>
-    </message>
-</context>
-<context>
     <name>QObject</name>
     <message>
         <source>Auto Selector</source>
@@ -7400,10 +7579,6 @@ Error: %1</source>
     <message>
         <source>Chain Proxy</source>
         <translation>链式代理</translation>
-    </message>
-    <message>
-        <source>Direct</source>
-        <translation>直连</translation>
     </message>
     <message>
         <source>Endpoint</source>
@@ -7474,6 +7649,14 @@ Error: %1</source>
         <translation>原始</translation>
     </message>
     <message>
+        <source>Selector %1 has no valid members</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Selector %1 has no usable members</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <source>The routing profile lists an endpoint profile (id %1) that no longer exists</source>
         <translation>路由配置中引用了一个不再存在的端点配置 (id %1)</translation>
     </message>
@@ -7504,6 +7687,14 @@ Error: %1</source>
     <message>
         <source>%1 is listed twice in the endpoints of the routing profile</source>
         <translation>%1 在路由配置档的端点中重复出现</translation>
+    </message>
+    <message>
+        <source>Selector group could not resolve its profile</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Selector group could not resolve its member outbounds</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>no group</source>
@@ -7550,8 +7741,20 @@ Error: %1</source>
         <translation>正在处理订阅数据...</translation>
     </message>
     <message>
-        <source>Process complete, applying...</source>
-        <translation>处理完成，正在应用...</translation>
+        <source>Imported or updated %1 selector group(s).</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Mihomo - %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Skipped unsupported Mihomo rule-set: %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Imported %1 routing rules into %2.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Clearing servers...</source>
@@ -7994,10 +8197,16 @@ Deleted %5 Profiles:
         <translation>[自动选择器] 每个配置档都在失败，但是这个机器没有网络连接 — 保留当前的（配置）池。</translation>
     </message>
     <message>
-        <source>Proxy: %1
-Direct: %2</source>
-        <translation>代理: %1
-直连: %2</translation>
+        <source>IPv4 forwarding breaks Tun mode</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>IPv4 forwarding is on for the network adapter &quot;%1&quot;, usually because Mobile Hotspot or Internet Connection Sharing is sharing it.
+
+Windows then ignores the adapter binding that keeps Throne&apos;s own connections out of the Tun, so they loop back into it and fail.
+
+To fix this, share the hotspot from the throne-tun adapter instead of &quot;%1&quot; (Settings &gt; Mobile hotspot &gt; Share my internet connection from), or turn the hotspot off while using Tun mode.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Core exited, cleaning up...</source>
@@ -8018,28 +8227,6 @@ Direct: %2</source>
     <message>
         <source>Added remote routing profiles: %1 of %2 fetched</source>
         <translation>添加了远程路由配置档: 取得了 %1 / %2</translation>
-    </message>
-    <message>
-        <source>Add profiles to this group</source>
-        <translation>添加配置档到这个分组</translation>
-    </message>
-    <message>
-        <source>Create new subscription group</source>
-        <translation>创建新的订阅分组</translation>
-    </message>
-    <message>
-        <source>Import HTTP proxy profile</source>
-        <translation>导入 HTTP 代理配置档</translation>
-    </message>
-    <message>
-        <source>url detected</source>
-        <translation>检测到 URL</translation>
-    </message>
-    <message>
-        <source>%1
-How to update?</source>
-        <translation>%1
-如何更新？</translation>
     </message>
     <message>
         <source>Download Profiles</source>
@@ -8447,6 +8634,22 @@ Release note:
         <source>Ignore</source>
         <translation>忽略</translation>
     </message>
+    <message>
+        <source>Proxy:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Direct:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Selector</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>%1 member(s)</source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>QPlatformTheme</name>
@@ -8783,15 +8986,15 @@ Your local edits are overwritten on each update.</source>
     </message>
     <message>
         <source>This rule belongs to &quot;%1&quot;, an inner hop of the endpoint &quot;%2&quot;.
+
 Stop routing to that endpoint&apos;s inner hops?</source>
-        <translation>这个规则属于 &quot;%1&quot;，它是端点 &quot;%2&quot; 的内部跳点。
-停止路由到该端点的内部跳点吗?</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>This rule belongs to the endpoint &quot;%1&quot; and cannot be deleted on its own.
+
 Remove that endpoint from this routing profile as well?</source>
-        <translation>这条规则属于端点“%1”，且无法单独删除。
-同时从这个路由配置档中移除该端点吗？</translation>
+        <translation type="unfinished"></translation>
     </message>
 </context>
 <context>
@@ -8941,49 +9144,6 @@ Remove that endpoint from this routing profile as well?</source>
     <message>
         <source>Stopping…</source>
         <translation>正在停止…</translation>
-    </message>
-</context>
-<context>
-    <name>Sys::CoreDiagnostics</name>
-    <message>
-        <source>The core is not running.</source>
-        <translation>核心未在运行。</translation>
-    </message>
-    <message>
-        <source>Could not reach the core. See the log for details.</source>
-        <translation>无法访问核心。查看日志了解详情。</translation>
-    </message>
-    <message>
-        <source>The core could not capture the profile: %1</source>
-        <translation>核心无法捕获剖析文件: %1</translation>
-    </message>
-    <message>
-        <source>The core returned an empty profile.</source>
-        <translation>该核心返回了一个空剖析文件。</translation>
-    </message>
-    <message>
-        <source>Could not save %1: %2</source>
-        <translation>无法保存 %1: %2</translation>
-    </message>
-    <message>
-        <source>Performance profile saved to %1</source>
-        <translation>性能剖析数据已保存到 %1</translation>
-    </message>
-    <message>
-        <source>The performance profile was saved (%1).</source>
-        <translation>性能剖析已保存 (%1)。</translation>
-    </message>
-    <message>
-        <source>Performance profile failed: %1</source>
-        <translation>性能剖析失败: %1</translation>
-    </message>
-    <message>
-        <source>Performance profile</source>
-        <translation>性能剖析</translation>
-    </message>
-    <message>
-        <source>Show in folder</source>
-        <translation>在文件夹中显示</translation>
     </message>
 </context>
 <context>

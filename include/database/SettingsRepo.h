@@ -72,6 +72,11 @@ namespace Configs {
         int url_test_timeout_ms = 3000;
         bool disable_tray = false;
         int test_concurrent = 10;
+        // Periodic latency sweep over every distinct node: sign encodes enabled (negative = off), magnitude =
+        // the interval in minutes. Unlike sub/route_auto_update a short interval is the whole point here, so the
+        // call site applies no "under 30 minutes counts as off" clamp.
+        int auto_latency_test = 10;
+        qint64 auto_latency_test_last = 0;
         bool disable_traffic_stats = false;
         int current_group = 0;
         QString mux_protocol = "smux";

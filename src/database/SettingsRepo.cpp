@@ -116,6 +116,7 @@ namespace Configs {
             {"speed_test_mode",        &speed_test_mode},
             {"speed_test_timeout_ms",  &speed_test_timeout_ms},
             {"url_test_timeout_ms",    &url_test_timeout_ms},
+            {"auto_latency_test",      &auto_latency_test},
             {"xray_mux_concurrency",   &xray_mux_concurrency},
             {"current_route_id",       &current_route_id},
             {"stun_udp_policy",        &stun_udp_policy},
@@ -269,6 +270,10 @@ namespace Configs {
             }
             if (key == "route_auto_update_last") {
                 route_auto_update_last = str.toLongLong();
+                continue;
+            }
+            if (key == "auto_latency_test_last") {
+                auto_latency_test_last = str.toLongLong();
                 continue;
             }
             if (auto boolVal = boolMap.find(key); boolVal != boolMap.end()) {
