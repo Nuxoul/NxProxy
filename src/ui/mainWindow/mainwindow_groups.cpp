@@ -216,6 +216,9 @@ void MainWindow::show_group_tab_menu(const QPoint &p) {
         connect(menu.addAction(tr("Speed Test selected Group")), &QAction::triggered, this, [=,this]{
             testRunner->runSpeedTests(clickedGroup->Profiles(), false, [this, groupID] { resortCurrentGroupAfterTest(groupID); refresh_selector_panel(); });
         });
+        // Clean up acts on the current group; setCurrentIndex above already switched to the clicked one.
+        menu.addSeparator();
+        menu.addMenu(ui->menu_clean_up);
     }
     menu.exec(ui->tabWidget->tabBar()->mapToGlobal(p));
 }

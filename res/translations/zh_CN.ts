@@ -6482,6 +6482,10 @@ Improves hole-punching reliability. Requires IPv4.</source>
         <translation>禁用</translation>
     </message>
     <message>
+        <source>Clean up</source>
+        <translation>清理</translation>
+    </message>
+    <message>
         <source>Remove Duplicates</source>
         <translation>移除重复项</translation>
     </message>
