@@ -164,7 +164,8 @@ namespace Subscription {
         ProfilePtr makeProfileForXrayOutbound(const QJsonObject &out) {
             if (out.isEmpty()) return nullptr;
             const auto protocol = out["protocol"].toString();
-            if (protocol == "freedom" || protocol == "blackhole" || protocol == "dns" || protocol == "loopback") return nullptr;
+            if (protocol == "freedom" || protocol == "direct" || protocol == "blackhole" || protocol == "block"
+                || protocol == "dns" || protocol == "loopback") return nullptr;
             if (protocol == "vless") {
                 if (const auto normalized = normalizeXrayVlessForParse(out); !normalized.isEmpty()) {
                     auto ent = Configs::ProfilesRepo::NewProfile("xrayvless");

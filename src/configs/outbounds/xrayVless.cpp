@@ -122,4 +122,13 @@ namespace Configs {
         if (auto muxObj = multiplex->Build().object; !muxObj.isEmpty()) object["mux"] = muxObj;
         return {object, ""};
     }
+
+    SecurityInfo xrayVless::GetSecurity() {
+        auto info = outbound::GetSecurity();
+        if (info.level == SecurityLevel::None && IsVlessEncrypted(encryption)) {
+            info.label = QObject::tr("Encrypted");
+            info.level = SecurityLevel::Secure;
+        }
+        return info;
+    }
 }

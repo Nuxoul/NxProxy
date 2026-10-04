@@ -16,6 +16,9 @@ namespace Configs
 
     QString toAceHost(const QString& host);
 
+    // Xray's own private list (common/geodata/consts.go): loopback, LAN, CGNAT and reserved ranges, local-only names.
+    bool IsPrivateHost(const QString& host);
+
     QString getHeadersString(const QStringList& headers);
 
     QStringList parseHeaderPairs(const QString& rawHeader);

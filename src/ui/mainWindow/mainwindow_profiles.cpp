@@ -433,7 +433,7 @@ void MainWindow::on_menu_remove_insecure_triggered() {
     int remove_display_count = 0;
     for (const auto& profile : profiles) {
         if (!profile || !profile->outbound) continue;
-        if (!profile->outbound->GetSecurity().isDangerous()) continue;
+        if (!profile->outbound->EffectiveSecurity().isInsecure()) continue;
         del_ids += profile->id;
         if (remove_display_count < removeListPreviewLimit) {
             remove_display += profile->outbound->DisplayTypeAndName() + "\n";

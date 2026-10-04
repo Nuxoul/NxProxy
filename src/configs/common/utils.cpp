@@ -1,5 +1,9 @@
 #include "include/configs/common/utils.h"
 
+#include <algorithm>
+#include <QHostAddress>
+#include <QRegularExpression>
+
 #include "include/global/Configs.hpp"
 
 namespace Configs
@@ -90,6 +94,40 @@ namespace Configs
         // toAce is empty for IP literals and for names it rejects
         const auto ace = QString::fromLatin1(QUrl::toAce(host));
         return ace.isEmpty() ? host : ace;
+    }
+
+    bool IsPrivateHost(const QString& host)
+    {
+        auto bare = host.trimmed().toLower();
+        bare.remove('[').remove(']');
+        if (bare.endsWith('.')) bare.chop(1);
+        if (bare.isEmpty()) return false;
+
+        if (QHostAddress ip; ip.setAddress(bare)) {
+            // Folds a v4-mapped IPv6 address onto the IPv4 ranges.
+            bool isV4 = false;
+            if (const auto v4 = ip.toIPv4Address(&isV4); isV4) ip = QHostAddress(v4);
+            static const auto ranges = [] {
+                QList<QPair<QHostAddress, int>> list;
+                for (const auto cidr : {"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+                                        "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.88.99.0/24", "192.168.0.0/16",
+                                        "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/3",
+                                        "::/127", "fc00::/7", "fe80::/10", "ff00::/8"}) {
+                    list << QHostAddress::parseSubnet(QLatin1String(cidr));
+                }
+                return list;
+            }();
+            return std::any_of(ranges.cbegin(), ranges.cend(), [&ip](const auto& range) { return ip.isInSubnet(range); });
+        }
+
+        static const QStringList suffixes = {"lan", "localdomain", "example", "invalid", "localhost", "test", "local",
+                                             "home.arpa", "internal"};
+        for (const auto& suffix : suffixes) {
+            if (bare == suffix || bare.endsWith('.' + suffix)) return true;
+        }
+        // A dotless name only resolves through the local search domain.
+        static const QRegularExpression dotless(QStringLiteral("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$"));
+        return dotless.match(bare).hasMatch();
     }
 
     QString getHeadersString(const QStringList& headers) {

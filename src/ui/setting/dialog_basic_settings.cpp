@@ -474,6 +474,8 @@ void DialogBasicSettings::accept() {
     Configs::dataManager->settingsRepo->ntp_interval = ui->ntp_interval->currentText().trimmed();
     Configs::dataManager->settingsRepo->ntp_outbound = ui->ntp_outbound->currentText().trimmed();
 
+    // The Type column marks TLS profiles compromised while this is on.
+    profileListDisplayChanged |= Configs::dataManager->settingsRepo->skip_cert != ui->skip_cert->isChecked();
     D_SAVE_BOOL(skip_cert)
     Configs::dataManager->settingsRepo->disable_privilege_req = ui->disable_priv_req->isChecked();
     if (Configs::dataManager->settingsRepo->disable_run_admin != ui->windows_no_admin->isChecked()) CACHE.updateDisableAdmin = true;

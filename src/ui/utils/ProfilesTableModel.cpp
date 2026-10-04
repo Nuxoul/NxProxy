@@ -138,9 +138,10 @@ QVariant ProfilesTableModel::data(const QModelIndex &index, int role) const {
         return QApplication::palette().brush(QPalette::Active, QPalette::AlternateBase);
     }
     if (role == Qt::ToolTipRole) {
-        if (index.column() == ColType && Configs::dataManager->settingsRepo->show_config_security
-            && profile->outbound && profile->outbound->GetSecurity().isDangerous()) {
-            return tr("This config's traffic is not properly protected.");
+        if (index.column() == ColType && Configs::dataManager->settingsRepo->show_config_security && profile->outbound) {
+            const auto security = profile->outbound->EffectiveSecurity();
+            if (security.compromised) return tr("Certificate checks are turned off by the \"Skip TLS certificate authentication\" setting.");
+            if (security.isDangerous()) return tr("This config's traffic is not properly protected.");
         }
         return {};
     }
