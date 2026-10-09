@@ -161,7 +161,7 @@ func (s *server) CaptureDiagnostics(ctx context.Context, in *gen.DiagnosticsRequ
 		return &gen.DiagnosticsResponse{Error: To(fmt.Sprintf("attachments exceed %d MiB", diagnosticsMaxAttachmentBytes>>20))}, nil
 	}
 
-	windowCtx, stop := context.WithCancel(context.Background())
+	windowCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	setDiagnosticsStop(stop)
 	defer setDiagnosticsStop(nil)
@@ -172,7 +172,7 @@ func (s *server) CaptureDiagnostics(ctx context.Context, in *gen.DiagnosticsRequ
 	meta.Capture.Trace = in.GetTrace()
 
 	var buf bytes.Buffer
-	archive := &diagnosticsArchive{zw: zip.NewWriter(&buf)}
+	archive := &diagnosticsArchive{zw: zip.NewWriter(&limitedWriter{writer: &buf, remaining: maxResponseBytes - (1 << 20)})}
 	archive.addBytes("README.txt", []byte(diagnosticsReadme))
 	archive.add("metrics-start.txt", writeRuntimeMetrics)
 	meta.Runtime.GoroutinesStart = runtime.NumGoroutine()
@@ -246,7 +246,8 @@ func captureDiagnosticsWindow(ctx context.Context, archive *diagnosticsArchive, 
 
 	var cpuProfile bytes.Buffer
 	var stopCPU func()
-	if err := pprof.StartCPUProfile(&cpuProfile); err != nil {
+	cpuWriter := &limitedWriter{writer: &cpuProfile, remaining: 32 << 20}
+	if err := pprof.StartCPUProfile(cpuWriter); err != nil {
 		archive.fail("cpu.pprof", err)
 	} else {
 		stopCPU = sync.OnceFunc(pprof.StopCPUProfile)
@@ -263,12 +264,16 @@ func captureDiagnosticsWindow(ctx context.Context, archive *diagnosticsArchive, 
 
 	if stopCPU != nil {
 		stopCPU()
-		archive.addBytes("cpu.pprof", cpuProfile.Bytes())
+		if cpuWriter.err != nil {
+			archive.fail("cpu.pprof", cpuWriter.err)
+		} else {
+			archive.addBytes("cpu.pprof", cpuProfile.Bytes())
+		}
 	}
 	if recorder != nil {
 		// WriteTo refuses a stopped recorder.
 		var traced bytes.Buffer
-		if _, err := recorder.WriteTo(&traced); err != nil {
+		if _, err := recorder.WriteTo(&limitedWriter{writer: &traced, remaining: diagnosticsTraceMaxBytes}); err != nil {
 			archive.fail("trace.out", err)
 		} else {
 			archive.addBytes("trace.out", traced.Bytes())
@@ -367,4 +372,22 @@ func attachmentName(name string) string {
 		return ""
 	}
 	return base
+}
+
+// Bounds diagnostics allocations before bytes.Buffer grows (rather than only
+// rejecting the serialized archive after it has already been built).
+type limitedWriter struct {
+	writer    io.Writer
+	remaining int
+	err       error
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	if len(p) > w.remaining {
+		w.err = fmt.Errorf("diagnostics exceeds byte budget")
+		return 0, w.err
+	}
+	n, err := w.writer.Write(p)
+	w.remaining -= n
+	return n, err
 }

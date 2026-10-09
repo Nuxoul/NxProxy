@@ -1,6 +1,7 @@
 #include "include/stats/autoselector/AutoSelectorMonitor.hpp"
 
 #include "include/api/RPC.h"
+#include "include/global/Utils.hpp"
 #include "include/database/DatabaseManager.h"
 #include "include/database/ProfilesRepo.h"
 #include "include/configs/outbounds/autoselector.h"
@@ -113,7 +114,7 @@ namespace Stats
             lastHealthPersist = QDateTime::currentMSecsSinceEpoch();
         }
 
-        QList<std::shared_ptr<Configs::Profile>> dirty;
+        std::vector<Configs::TestResult> dirty;
         for (const auto &member : members) {
             if (member.profileID < 0 || member.probes == 0) continue;
             int latency;
@@ -127,11 +128,12 @@ namespace Stats
             }
             auto profile = Configs::dataManager->profilesRepo->GetProfile(member.profileID);
             if (profile == nullptr || profile->latency == latency) continue;
-            profile->SetLatency(latency);
-            dirty << profile;
+            dirty.emplace_back(member.profileID, Configs::TestResult::Kind::Health, latency,
+                               QDateTime::currentSecsSinceEpoch());
         }
-        if (dirty.isEmpty()) return;
-        Configs::dataManager->profilesRepo->SaveBatch(dirty);
+        if (dirty.empty()) return;
+        if (!Configs::dataManager->profilesRepo->SaveTestResults(dirty).success)
+            MW_show_log(QObject::tr("Failed to save auto selector health results"));
     }
 
     void AutoSelectorMonitor::Clear()
@@ -203,8 +205,7 @@ namespace Stats
 
     void AutoSelectorMonitor::Loop()
     {
-        while (true) {
-            QThread::msleep(kPollIntervalMs);
+        while (waitForBackgroundWork(kPollIntervalMs)) {
             if (!Active()) continue;
             poll();
         }

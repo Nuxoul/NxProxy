@@ -30,15 +30,23 @@ func (s *server) UpdateRuleSets(ctx context.Context, in *gen.EmptyReq) (*gen.Upd
 	var failures []string
 	slots := make(chan struct{}, ruleSetUpdateConcurrency)
 	var wg sync.WaitGroup
+updateLoop:
 	for _, ruleSet := range box.Router().RuleSets() {
 		updatable, ok := ruleSet.(adapter.UpdatableRuleSet)
 		if !ok {
 			continue
 		}
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+			resultMu.Lock()
+			failures = append(failures, ctx.Err().Error())
+			resultMu.Unlock()
+			break updateLoop
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			slots <- struct{}{}
 			defer func() { <-slots }()
 			err := updatable.Update(ctx)
 			resultMu.Lock()

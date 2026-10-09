@@ -18,6 +18,8 @@
 #include "include/global/Logger.hpp"
 #include "include/sys/Process.hpp"
 #include "include/ui/mainWindow/MainWindowInternal.h"
+#include "include/ui/mainWindow/TestRunner.h"
+#include "include/stats/traffic/TrafficStatsManager.hpp"
 
 #include "include/ui/group/dialog_manage_groups.h"
 #include "include/ui/setting/dialog_basic_settings.h"
@@ -124,6 +126,12 @@ void MainWindow::prepare_exit()
         return;
     }
     Configs::dataManager->settingsRepo->prepare_exit = true;
+    { QMutexLocker lock(&coreProcessMutex); if (core_process) core_process->CancelAutomaticRestart(); }
+    requestBackgroundStop();
+    Stats::connection_lister->stopLoop();
+    { QMutexLocker lock(&logMutex); logWaiter.wakeAll(); }
+    if (testRunner && testRunner->isRunning()) testRunner->stop();
+    if (API::defaultClient) API::defaultClient->CancelPendingCalls();
     LOG_INFO("prepare_exit started, tearing down proxy/tun/core");
     if (Configs::dataManager->settingsRepo->spmode_system_proxy) set_system_proxy(false);
     if (Configs::dataManager->settingsRepo->system_dns_set) set_system_dns(false, false);
@@ -137,6 +145,12 @@ void MainWindow::prepare_exit()
     {
         core_process->Kill();
     }, DS_cores, true);
+    // Killing the core wakes any remaining RPC callers. Drain accepted writes/queued UI
+    // completions before the application and its window are allowed to disappear.
+    if (!finishBackgroundWork(10000)) LOG_WARN("Background shutdown deadline exceeded");
+    Stats::trafficStatsManager->Flush();
+    LogThread->quit();
+    if (!LogThread->wait(1500)) LOG_WARN("Log worker shutdown deadline exceeded");
     HideWindow(this);
     tray->hide();
 
@@ -325,10 +339,22 @@ bool MainWindow::StopVPNProcess() {
 }
 
 void MainWindow::RestartCore() {
+    if (Configs::dataManager->settingsRepo->prepare_exit) return;
+    const int restoreID = running ? running->id : Configs::dataManager->settingsRepo->started_id;
+    Configs_sys::CoreProcess::RestartToken token;
+    {
+        QMutexLocker lock(&coreProcessMutex);
+        if (!core_process) return;
+        core_process->CancelAutomaticRestart();
+        token = core_process->NoteProfileExpected(restoreID);
+    }
     runOnThread([=, this]
     {
-        profile_stop(true, true, true);
-        core_process->Kill();
+        if (!core_process->IsRestartCurrent(token)) return;
+        profile_stop(true, true, true, true);
+        if (!core_process->IsRestartCurrent(token)) return;
+        core_process->SetProfileToRestore(restoreID);
+        core_process->Restart();
     }, DS_cores);
 }
 

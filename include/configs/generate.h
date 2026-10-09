@@ -46,7 +46,8 @@ namespace Configs
         QList<AutoSelectorBuildInfo> autoSelectors;
         // Endpoint hop tag -> profile id, so a live status can be named after its profile.
         QMap<QString, int> vpnEndpointProfiles;
-        // Runtime outbound tag -> readable strategy group/node label for connection views.
+        // Node tag -> node-only label; selector-<id> -> group-only label. Compose the
+        // actual connection chain for "group → node", never the current selection.
         QMap<QString, QString> outboundDisplayNames;
         // Strategy group profile id -> member profile id -> the member's tag in the running config,
         // so a click can repick the group through the core instead of reloading the config.
@@ -115,8 +116,15 @@ namespace Configs
     // sing-box duration grammar: one or more "<number><unit>" with unit ns/us/ms/s/m/h/d.
     bool IsValidDuration(const QString &text);
 
-    std::shared_ptr<BuildConfigResult> BuildSingBoxConfig(const std::shared_ptr<Profile> &ent);
+    struct BuildConfigOptions {
+        // Opt in only once the connection-chain display consumer is installed.
+        // false preserves independent member resources for rollback / A-B measurements.
+        bool shareSelectorOutbounds = false;
+    };
 
+    std::shared_ptr<BuildConfigResult> BuildSingBoxConfig(const std::shared_ptr<Profile> &ent);
+    std::shared_ptr<BuildConfigResult> BuildSingBoxConfig(const std::shared_ptr<Profile> &ent,
+                                                       const BuildConfigOptions &options);
     bool IsValid(const std::shared_ptr<Profile> &ent);
 
     // Eligible: an openvpn/openconnect profile, or a chain whose exit hop is one, never the reverse.

@@ -10,6 +10,11 @@ import (
 )
 
 func (s *server) Test(ctx context.Context, in *gen.TestReq) (*gen.TestResp, error) {
+	testCtx, cancel := requestTestContext(ctx)
+	defer cancel()
+	if err := testCtx.Err(); err != nil {
+		return nil, err
+	}
 	env, err := prepareTestEnv(in.GetTestCurrent(), in.GetNeedXray(), in.GetXrayConfig(),
 		in.XrayFullConfigs, in.GetConfig(), in.OutboundTags, in.GetUseDefaultOutbound(),
 		in.GetXrayOutboundDnsStrategy())
@@ -24,9 +29,6 @@ func (s *server) Test(ctx context.Context, in *gen.TestReq) (*gen.TestResp, erro
 		return nil, err
 	}
 	defer env.close()
-
-	// Held, not re-read: StopTest rearms a fresh context, uncancelled.
-	testCtx := probe.TestContext()
 
 	// A muxed config needs a warm connection; the live instance already is one.
 	twice := !in.GetTestCurrent()
@@ -87,6 +89,11 @@ func (s *server) QueryURLTest(ctx context.Context, in *gen.EmptyReq) (out *gen.Q
 }
 
 func (s *server) IPTest(ctx context.Context, in *gen.IPTestRequest) (*gen.IPTestResp, error) {
+	testCtx, cancel := requestTestContext(ctx)
+	defer cancel()
+	if err := testCtx.Err(); err != nil {
+		return nil, err
+	}
 	// Always builds its own box: there is no test-current variant of an IP test.
 	const current = false
 	env, err := prepareTestEnv(current, in.GetNeedXray(), in.GetXrayConfig(),
@@ -98,7 +105,7 @@ func (s *server) IPTest(ctx context.Context, in *gen.IPTestRequest) (*gen.IPTest
 	defer env.close()
 
 	timeout := time.Duration(in.GetTestTimeoutMs()) * time.Millisecond
-	results := probe.BatchIPTest(probe.TestContext(), env.box, env.tags,
+	results := probe.BatchIPTest(testCtx, env.box, env.tags,
 		int(in.GetMaxConcurrency()), !current, timeout)
 
 	res := make([]*gen.IPTestRes, 0, len(results))
@@ -133,4 +140,17 @@ func (s *server) QueryIPTest(ctx context.Context, in *gen.EmptyReq) (out *gen.Qu
 		})
 	}
 	return
+}
+
+// Capture the legacy StopTest generation before preparing an environment, and
+// combine it with this request's disconnect/timeout cancellation. Never cancel
+// a different request or reset the legacy generation on request cancellation.
+func requestTestContext(parent context.Context) (context.Context, context.CancelFunc) {
+	legacy := probe.TestContext()
+	ctx, cancel := context.WithCancel(parent)
+	stop := context.AfterFunc(legacy, cancel)
+	if legacy.Err() != nil {
+		cancel()
+	}
+	return ctx, func() { stop(); cancel() }
 }

@@ -81,14 +81,14 @@ void MainWindow::resortCurrentGroupAfterTest(int groupID)
     GroupSortAction action;
     action.method = GroupSortMethod::ByTestResult;
     action.descending = testResultSortDescending;
-    runOnNewThread([this, group, action] {
+    if (!runOnBackgroundTask([this, group, action] {
         if (!group->SortProfiles(action)) return;
         Configs::dataManager->groupsRepo->Save(group);
         runOnUiThread([this, group] {
             if (Configs::dataManager->settingsRepo->current_group == group->id)
                 refresh_proxy_list({}, true);
         });
-    });
+    }, this)) MW_show_log(tr("Background task queue is full; sorting was skipped."));
 }
 
 void MainWindow::refresh_groups() {

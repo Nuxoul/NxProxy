@@ -205,6 +205,39 @@ void testCleanupAndPersistence() {
     require(reloaded.auto_latency_test_last==1791420000 && reloaded.auto_latency_test==10,"timestamp Save/Load missing");
     std::cout<<"PASS R3 R9 group-scoped explicit cleanup and timestamp round-trip\n";
 }
+void testNarrowTestResults() {
+    auto g=addGroup("Narrow results");auto a=addNode(g->id,"result-a",10),b=addNode(g->id,"result-b",20);
+    auto& repo=*Configs::dataManager->profilesRepo;auto& db=Configs::dataManager->getDatabase();
+    a->dl_speed="dl";a->ul_speed="ul";a->ip_out="ip";a->test_country="ZZ";repo.Save(a);
+    auto saved=repo.SaveTestResults({{a->id,Configs::TestResult::Kind::Url,42,123}});
+    require(saved.success && saved.appliedIDs==QList<int>{a->id},"narrow URL save");
+    require(a->latency==42 && a->latency_at==123 && a->dl_speed=="dl" && a->test_country=="ZZ","URL field/cache independence");
+    saved=repo.SaveTestResults({{a->id,Configs::TestResult::Kind::Ip,999,999,{}, {},QString("US"),QString("1.2.3.4")}});
+    require(saved.success && a->latency==42 && a->latency_at==123 && a->dl_speed=="dl" && a->ip_out=="1.2.3.4","IP field independence");
+    saved=repo.SaveTestResults({{a->id,Configs::TestResult::Kind::Speed,{},0,QString("new-dl")}});
+    require(saved.success && a->ul_speed=="ul" && a->latency==42 && a->ip_out=="1.2.3.4","DL field independence");
+    db.execThrow("CREATE TRIGGER reject_result BEFORE UPDATE OF latency ON profiles WHEN NEW.id="+std::to_string(b->id)+" BEGIN SELECT RAISE(ABORT,'injected result failure'); END");
+    saved=repo.SaveTestResults({{a->id,Configs::TestResult::Kind::Url,-1,200},{b->id,Configs::TestResult::Kind::Url,-1,200}});
+    require(!saved.success && saved.appliedIDs.isEmpty() && a->latency==42 && b->latency==20,"result failure published cache or IDs");
+    auto row=db.queryThrow("SELECT latency FROM profiles WHERE id=?",a->id);
+    require(row->executeStep() && row->getColumn(0).getInt()==42,"result batch did not roll back");row.reset();
+    require(!UrlTestCleanup::allowed(true,false,!saved.success,true),"failed result save can clean");
+    db.execThrow("DROP TRIGGER reject_result");
+    QList<int> deleted{b->id};repo.BatchDeleteProfiles(deleted);
+    saved=repo.SaveTestResults({{b->id,Configs::TestResult::Kind::Url,-1,201}});
+    require(saved.success && saved.appliedIDs.isEmpty() && repo.GetProfile(b->id)==nullptr,"result resurrected deleted ID");
+    std::atomic<bool> start=false;
+    std::thread subscription([&]{
+        Configs::Database other(db.Path());while(!start.load())std::this_thread::yield();
+        for(int i=0;i<100;++i) other.execThrow("UPDATE profiles SET name='subscription',outbound_json='subscription-json',traffic_dl=333 WHERE id=?",a->id);
+    });
+    start=true;
+    for(int i=0;i<100;++i)require(repo.SaveTestResults({{a->id,Configs::TestResult::Kind::Url,70+i,300+i}}).success,"concurrent result save");
+    subscription.join();
+    row=db.queryThrow("SELECT name,outbound_json,traffic_dl,latency FROM profiles WHERE id=?",a->id);
+    require(row->executeStep() && row->getColumn(0).getText()==std::string("subscription") && row->getColumn(1).getText()==std::string("subscription-json") && row->getColumn(2).getInt()==333 && row->getColumn(3).getInt()==169,"concurrent config/result lost");
+    std::cout<<"PASS O1 real repo narrow fields, rollback, deleted IDs and concurrent subscription updates\n";
+}
 void testPages() {
     auto g=addGroup("Filter regression");auto a=addNode(g->id,"visible a"),b=addNode(g->id,"visible b");
     Configs::dataManager->settingsRepo->current_group=g->id;
@@ -224,6 +257,8 @@ void testPages() {
     std::cout<<"PASS R6 live Qt control reparenting across 3 tabs and safe rebuild\n";
 }
 }
+#include "background_regressions.hpp"
+#include "connection_regressions.hpp"
 int main(int argc,char** argv){
     QApplication app(argc,argv);app.setQuitOnLastWindowClosed(false);
     QTemporaryDir dir;require(dir.isValid(),"temporary database dir");QDir::setCurrent(dir.path());
@@ -232,7 +267,7 @@ int main(int argc,char** argv){
     Configs::dataManager->settingsRepo->started_id=Configs::NoProfileId;
     QTimer dismiss;QObject::connect(&dismiss,&QTimer::timeout,[]{for(auto* w:QApplication::topLevelWidgets()) if(auto* box=qobject_cast<QMessageBox*>(w)) box->done(QMessageBox::Ok);});dismiss.start(5);
     int exit=0;
-    try{testParsingAndRefresh();testSortingAndConcurrency();testCleanupAndPersistence();testPages();std::cout<<"ALL REVIEW REGRESSIONS PASSED\n";}
+    try{testParsingAndRefresh();testSortingAndConcurrency();testCleanupAndPersistence();testNarrowTestResults();testPages();runConnectionRegressions();runBackgroundRegressions();std::cout<<"ALL REVIEW REGRESSIONS PASSED\n";}
     catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<"\n";exit=1;}
     pump(50);delete Configs::dataManager;Configs::dataManager=nullptr;return exit;
 }

@@ -98,6 +98,12 @@ public:
 
 private:
     QModelIndex indexOf(ConnectionsTree::TreeItem *item, int column) const;
+    bool updateValuesIfTopologyMatches(const QList<Stats::ConnectionMetadata>& connections,
+                                        Stats::ConnectionSort sort, bool ascending);
+    Stats::ConnectionSort m_lastSort = Stats::Default;
+    bool m_lastAscending = false;
 
+    QList<Stats::ConnectionMetadata> m_valueRows;
+    QList<ConnectionsTree::ConnectionLeafItem*> m_valueLeaves;
     std::vector<std::unique_ptr<ConnectionsTree::ProcessGroupItem>> m_groups;
 };

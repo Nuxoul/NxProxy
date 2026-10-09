@@ -29,7 +29,12 @@ func speedTestResultToProto(res probe.SpeedTestResult) *gen.SpeedTestResult {
 }
 
 func (s *server) SpeedTest(ctx context.Context, in *gen.SpeedTestRequest) (*gen.SpeedTestResponse, error) {
-	if !*in.TestDownload && !*in.TestUpload && !*in.SimpleDownload && !*in.OnlyCountry {
+	testCtx, cancel := requestTestContext(ctx)
+	defer cancel()
+	if err := testCtx.Err(); err != nil {
+		return nil, err
+	}
+	if !in.GetTestDownload() && !in.GetTestUpload() && !in.GetSimpleDownload() && !in.GetOnlyCountry() {
 		return nil, errors.New("cannot run empty test")
 	}
 
@@ -47,9 +52,9 @@ func (s *server) SpeedTest(ctx context.Context, in *gen.SpeedTestRequest) (*gen.
 	}
 	defer env.close()
 
-	results := probe.BatchSpeedTest(probe.TestContext(), env.box, env.tags,
-		*in.TestDownload, *in.TestUpload, *in.SimpleDownload, *in.SimpleDownloadAddr,
-		time.Duration(*in.TimeoutMs)*time.Millisecond, *in.OnlyCountry, *in.CountryConcurrency)
+	results := probe.BatchSpeedTest(testCtx, env.box, env.tags,
+		in.GetTestDownload(), in.GetTestUpload(), in.GetSimpleDownload(), in.GetSimpleDownloadAddr(),
+		time.Duration(in.GetTimeoutMs())*time.Millisecond, in.GetOnlyCountry(), in.GetCountryConcurrency())
 
 	res := make([]*gen.SpeedTestResult, 0, len(results))
 	for _, data := range results {

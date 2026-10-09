@@ -24,6 +24,91 @@
 #include <QPlainTextEdit>
 #include <QDialogButtonBox>
 #include <QDialog>
+#include <QThreadPool>
+#include <QSemaphore>
+#include <QWaitCondition>
+#include <QElapsedTimer>
+#include <QCoreApplication>
+#include <QEventLoop>
+#include <atomic>
+#include <exception>
+
+namespace {
+struct BackgroundWorkState {
+    QMutex mutex;
+    QWaitCondition wake;
+    bool stopping = false;
+    bool accepting = true;
+    QList<QPointer<QThread>> threads;
+    QThreadPool shortPool;
+    QSemaphore shortSlots{64};
+    std::atomic<int> shortCount{0};
+    BackgroundWorkState() { shortPool.setMaxThreadCount(4); shortPool.setExpiryTimeout(30000); }
+};
+BackgroundWorkState& backgroundWork() {
+    // Intentionally app-lifetime: a timeout must not destroy workers still unwinding.
+    static auto* state = new BackgroundWorkState;
+    return *state;
+}
+void invokeBackgroundSafely(const std::function<void()>& callback) {
+    try { callback(); }
+    catch (const std::exception& e) { qWarning() << "Background task failed:" << e.what(); }
+    catch (...) { qWarning() << "Background task failed with an unknown exception"; }
+}
+}
+
+bool runOnBackgroundTask(const std::function<void()>& callback, QObject* owner) {
+    auto& state = backgroundWork();
+    QMutexLocker lock(&state.mutex);
+    if (!state.accepting || !state.shortSlots.tryAcquire()) return false;
+    state.shortCount.fetch_add(1);
+    const QPointer<QObject> guard(owner);
+    const bool needsOwner = owner != nullptr;
+    state.shortPool.start([callback, guard, needsOwner, &state] {
+        if (!needsOwner || guard) invokeBackgroundSafely(callback);
+        state.shortCount.fetch_sub(1);
+        state.shortSlots.release();
+    });
+    return true;
+}
+int backgroundShortTaskCount() { return backgroundWork().shortCount.load(); }
+bool waitForBackgroundWork(unsigned long milliseconds) {
+    auto& state = backgroundWork();
+    QMutexLocker lock(&state.mutex);
+    if (state.stopping) return false;
+    state.wake.wait(&state.mutex, milliseconds);
+    return !state.stopping;
+}
+void requestBackgroundStop() {
+    auto& state = backgroundWork();
+    QMutexLocker lock(&state.mutex);
+    state.accepting = false;
+    state.stopping = true;
+    state.wake.wakeAll();
+}
+bool finishBackgroundWork(int timeoutMs) {
+    auto& state = backgroundWork();
+    {
+        QMutexLocker lock(&state.mutex);
+        state.accepting = false;
+        state.stopping = true;
+        state.wake.wakeAll();
+    }
+    QElapsedTimer deadline; deadline.start();
+    for (;;) {
+        bool busy = state.shortCount.load() != 0;
+        {
+            QMutexLocker lock(&state.mutex);
+            for (const auto& thread : state.threads) if (thread && !thread->isFinished()) busy = true;
+        }
+        if (!busy) return true;
+        if (deadline.elapsed() >= timeoutMs) return false;
+        // Workers may need queued UI completion. Never wait while holding the state mutex.
+        if (auto* app = QCoreApplication::instance(); app && QThread::currentThread() == app->thread())
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 5);
+        QThread::msleep(2);
+    }
+}
 
 #ifdef Q_OS_WIN
 #include "include/sys/windows/guihelper.h"
@@ -454,31 +539,26 @@ void LaunchFiles_FlushPending() {
 }
 
 void runOnNewThread(const std::function<void()> &callback, bool wait) {
-    auto *timer = new QTimer();
-    auto thread = new QThread();
-
-    if (auto *app = QCoreApplication::instance()) thread->moveToThread(app->thread());
-    timer->moveToThread(thread);
-    timer->setSingleShot(true);
-
-    thread->start();
-    QObject::connect(thread, &QThread::finished, thread, &QObject::deleteLater);
-
-    QEventLoop loop;
-    QObject::connect(timer, &QTimer::timeout, [=, &loop]() {
-        callback();
-        timer->deleteLater();
-        thread->quit();
-
-        if (wait)
-        {
-            QMetaObject::invokeMethod(&loop, "quit", Qt::QueuedConnection);
+    auto& state = backgroundWork();
+    QThread* thread = nullptr;
+    {
+        QMutexLocker lock(&state.mutex);
+        if (!state.accepting) { qWarning() << "Background work rejected during shutdown"; return; }
+        thread = QThread::create([callback] { invokeBackgroundSafely(callback); });
+        if (auto* app = QCoreApplication::instance()) thread->moveToThread(app->thread());
+        for (int i = state.threads.size() - 1; i >= 0; --i)
+            if (!state.threads[i] || state.threads[i]->isFinished()) state.threads.removeAt(i);
+        state.threads.append(thread);
+        QObject::connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+        thread->start();
+    }
+    if (wait) {
+        const QPointer<QThread> guard(thread);
+        while (guard && !guard->isFinished()) {
+            if (auto* app = QCoreApplication::instance(); app && QThread::currentThread() == app->thread())
+                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 5);
+            if (guard) guard->wait(5);
         }
-    });
-    QMetaObject::invokeMethod(timer, "start", Qt::QueuedConnection, Q_ARG(int, 0));
-
-    if (wait && QThread::currentThread() != thread) {
-        loop.exec();
     }
 }
 

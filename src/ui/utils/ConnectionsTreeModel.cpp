@@ -191,11 +191,56 @@ QVariant ConnectionsTreeModel::headerData(int section, Qt::Orientation orientati
     return {};
 }
 
+bool ConnectionsTreeModel::updateValuesIfTopologyMatches(const QList<Stats::ConnectionMetadata>& connections,
+                                                         Stats::ConnectionSort sort, bool ascending) {
+    if (m_groups.empty() || m_lastSort != sort || m_lastAscending != ascending ||
+        connections.size() != m_valueRows.size()) return false;
+    // Numeric sorting may reorder rows. Fixed topology/order is the only fast path.
+    if (sort == Stats::ByTraffic || sort == Stats::ByDownload || sort == Stats::ByUpload ||
+        sort == Stats::BySpeed || sort == Stats::ByDownloadSpeed || sort == Stats::ByUploadSpeed) return false;
+    for (qsizetype i = 0; i < connections.size(); ++i) {
+        const auto& a = connections[i]; const auto& b = m_valueRows[i];
+        if (a.id != b.id || a.process != b.process || a.dest != b.dest || a.domain != b.domain ||
+            a.network != b.network || a.protocol != b.protocol || a.outbound != b.outbound ||
+            a.chain != b.chain || a.sourceDisplay != b.sourceDisplay) return false;
+    }
+    for (auto& group : m_groups) {
+        group->totalUpload = group->totalDownload = group->totalUploadSpeed = group->totalDownloadSpeed = 0;
+        group->sameOutbound = true;
+        for (auto& leaf : group->children) {
+            leaf->count = 0;
+            leaf->upload = leaf->download = leaf->uploadSpeed = leaf->downloadSpeed = 0;
+        }
+    }
+    for (qsizetype i = 0; i < connections.size(); ++i) {
+        const auto& c = connections[i]; auto* leaf = m_valueLeaves[i]; auto* group = leaf->parent;
+        if (leaf->count++ == 0) leaf->meta = c;
+        leaf->upload += c.upload; leaf->download += c.download;
+        leaf->uploadSpeed += c.uploadSpeed; leaf->downloadSpeed += c.downloadSpeed;
+        group->totalUpload += c.upload; group->totalDownload += c.download;
+        group->totalUploadSpeed += c.uploadSpeed; group->totalDownloadSpeed += c.downloadSpeed;
+    }
+    for (auto& group : m_groups) {
+        if (!group->children.empty()) group->commonOutbound = group->children.front()->meta.outboundDisplay;
+        for (const auto& leaf : group->children)
+            group->sameOutbound &= group->commonOutbound == leaf->meta.outboundDisplay;
+        const auto parent = indexOf(group.get(), 0);
+        if (!group->children.empty()) emit dataChanged(index(0, 0, parent), index(static_cast<int>(group->children.size()) - 1, ColumnCount - 1, parent));
+        emit dataChanged(parent, indexOf(group.get(), ColumnCount - 1));
+    }
+    m_valueRows = connections;
+    return true;
+}
+
 void ConnectionsTreeModel::setConnections(const QList<Stats::ConnectionMetadata> &connections,
                                           Stats::ConnectionSort sort, bool ascending) {
+    if (updateValuesIfTopologyMatches(connections, sort, ascending)) return;
+    m_lastSort = sort; m_lastAscending = ascending;
     Groups groups;
     QHash<QString, ProcessGroupItem *> groupByName;
     QHash<QString, ConnectionLeafItem *> leafByKey;
+    QList<ConnectionLeafItem*> valueLeaves;
+    valueLeaves.reserve(connections.size());
 
     for (const auto &c : connections) {
         const QString process = c.process.trimmed();
@@ -216,7 +261,7 @@ void ConnectionsTreeModel::setConnections(const QList<Stats::ConnectionMetadata>
 
         const QString dest = DisplayDest(c.dest, c.domain);
         const QString protocol = c.protocol.isEmpty() ? c.network : c.network + " (" + c.protocol + ")";
-        const QString key = dest + "\t" + protocol + "\t" + c.outbound + "\t" + c.sourceDisplay;
+        const QString key = dest + "\t" + protocol + "\t" + c.outbound + "\t" + c.chain.join(QChar(0x1f)) + "\t" + c.sourceDisplay;
         ConnectionLeafItem *&leaf = leafByKey[process + "\n" + key];
         if (leaf == nullptr) {
             leaf = group->children.emplace_back(std::make_unique<ConnectionLeafItem>()).get();
@@ -226,6 +271,7 @@ void ConnectionsTreeModel::setConnections(const QList<Stats::ConnectionMetadata>
             leaf->destText = dest;
             leaf->protocolText = protocol;
         }
+        valueLeaves.append(leaf);
         leaf->count++;
         if (!c.id.isEmpty()) leaf->connectionIds.append(c.id);
         leaf->upload += c.upload;
@@ -292,6 +338,8 @@ void ConnectionsTreeModel::setConnections(const QList<Stats::ConnectionMetadata>
         to.append(moved != nullptr ? indexOf(moved, index.column()) : QModelIndex());
     }
     m_groups.swap(groups);
+    m_valueRows = connections;
+    m_valueLeaves = std::move(valueLeaves);
     changePersistentIndexList(from, to);
     emit layoutChanged();
 }

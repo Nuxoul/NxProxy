@@ -3,6 +3,7 @@
 
 #include "include/ui/mainwindow.h"
 #include <QSet>
+#include <QDateTime>
 #include "include/api/RPC.h"
 #include "include/configs/generate.h"
 #include "include/database/GroupsRepo.h"
@@ -139,36 +140,36 @@ QString TestRunner::contextName(int entID) const {
     return MainWindow::tr("a tested profile");
 }
 
-void TestRunner::applyUrlResult(const std::shared_ptr<Configs::Profile>& ent, const libcore::URLTestResp& res,
-                                const QHash<QString, bool>* vpnConnected) {
+Configs::TestResult TestRunner::urlResult(const std::shared_ptr<Configs::Profile>& ent, const libcore::URLTestResp& res,
+                                        const QHash<QString, bool>* vpnConnected) {
+    int latency;
     const auto error = QString::fromStdString(res.error.value());
     if (error.isEmpty()) {
-        ent->SetLatency(res.latency_ms.value());
+        latency = res.latency_ms.value();
     } else if (isTestAborted(error)) {
-        ent->SetLatency(0);
+        latency = 0;
     } else if (vpnConnected != nullptr && isVpnProfile(ent)
                && vpnConnected->value(QString::fromStdString(res.outbound_tag.value()), false)) {
-        ent->SetLatency(Configs::kLatencyConnectOnly);
+        latency = Configs::kLatencyConnectOnly;
     } else {
-        ent->SetLatency(-1);
+        latency = -1;
         MW_show_log(MainWindow::tr("[%1] test error: %2").arg(ent->outbound->DisplayTypeAndName(), error));
     }
-    Configs::dataManager->profilesRepo->Save(ent);
+    return {ent->id, Configs::TestResult::Kind::Url, latency, QDateTime::currentSecsSinceEpoch()};
 }
 
-void TestRunner::applyIpResult(const std::shared_ptr<Configs::Profile>& ent, const libcore::IPTestRes& res) {
+Configs::TestResult TestRunner::ipResult(const std::shared_ptr<Configs::Profile>& ent, const libcore::IPTestRes& res) {
     const auto error = QString::fromStdString(res.error.value());
+    QString ip, country;
     if (error.isEmpty()) {
-        ent->ip_out = QString::fromStdString(res.ip.value());
-        ent->test_country = QString::fromStdString(res.country_code.value());
+        ip = QString::fromStdString(res.ip.value());
+        country = QString::fromStdString(res.country_code.value());
     } else {
         if (!isTestAborted(error)) {
             MW_show_log(MainWindow::tr("[%1] IP test error: %2").arg(ent->outbound->DisplayTypeAndName(), error));
         }
-        ent->ip_out.clear();
-        ent->test_country.clear();
     }
-    Configs::dataManager->profilesRepo->Save(ent);
+    return {ent->id, Configs::TestResult::Kind::Ip, {}, 0, {}, {}, country, ip};
 }
 
 TestRunner::UrlProbeOutcome TestRunner::runUrlProbe(const Target& target) {
@@ -234,6 +235,7 @@ TestRunner::UrlProbeOutcome TestRunner::runUrlProbe(const Target& target) {
         vpnConnected.insert(QString::fromStdString(st.tag.value()), st.connected.value());
     }
 
+    std::vector<Configs::TestResult> records;
     for (const auto& res : result.results) {
         const int entid = resolveEntID(target.tag2entID, res.outbound_tag.value(), target.entID);
         if (entid == -1) {
@@ -245,11 +247,22 @@ TestRunner::UrlProbeOutcome TestRunner::runUrlProbe(const Target& target) {
             MW_show_log(MainWindow::tr("Profile manager data is corrupted, try again."));
             continue;
         }
-        applyUrlResult(ent, res, &vpnConnected);
+        records.push_back(urlResult(ent, res, &vpnConnected));
         const auto error = QString::fromStdString(res.error.value());
         if (isTestAborted(error)) outcome.aborted = true;
-        else if (!error.isEmpty() && ent->latency < 0 && ent->latency != Configs::kLatencyConnectOnly)
+        else if (!error.isEmpty() && records.back().latency.value() == -1)
             outcome.failedIDs.append(entid);
+    }
+    const auto saved = Configs::dataManager->profilesRepo->SaveTestResults(records);
+    if (!saved.success) {
+        outcome.incomplete = true;
+        outcome.failedIDs.clear();
+        MW_show_log(MainWindow::tr("Failed to save URL test results"));
+    } else {
+        for (auto it = outcome.failedIDs.begin(); it != outcome.failedIDs.end();) {
+            if (!saved.appliedIDs.contains(*it)) it = outcome.failedIDs.erase(it);
+            else ++it;
+        }
     }
     return outcome;
 }
@@ -276,7 +289,7 @@ void TestRunner::runIpProbe(const Target& target) {
             if (staleGen(gen)) return;
             if (!ok || resp.results.empty()) return;
 
-            QList<int> updated;
+            std::vector<Configs::TestResult> records;
             for (const auto& res : resp.results) {
                 mw_->dataViewHtmlGenerator_.addTestProgress();
                 mw_->UpdateDataView();
@@ -284,9 +297,12 @@ void TestRunner::runIpProbe(const Target& target) {
                 if (entid == -1) continue;
                 auto ent = Configs::dataManager->profilesRepo->GetProfile(entid);
                 if (ent == nullptr) continue;
-                applyIpResult(ent, res);
-                updated << entid;
+                records.push_back(ipResult(ent, res));
             }
+            if (staleGen(gen)) return;
+            const auto saved = Configs::dataManager->profilesRepo->SaveTestResults(records);
+            if (!saved.success) { MW_show_log(MainWindow::tr("Failed to save IP test results")); return; }
+            const auto updated = saved.appliedIDs;
             if (updated.isEmpty()) return;
             mw_->UpdateDataView(true);
             runOnUiThread([=, this] { mw_->refresh_proxy_list(updated); });
@@ -300,6 +316,7 @@ void TestRunner::runIpProbe(const Target& target) {
         return;
     }
 
+    std::vector<Configs::TestResult> records;
     for (const auto& res : result.results) {
         const int entid = resolveEntID(target.tag2entID, res.outbound_tag.value(), target.entID);
         if (entid == -1) {
@@ -311,8 +328,10 @@ void TestRunner::runIpProbe(const Target& target) {
             MW_show_log(MainWindow::tr("Profile manager data is corrupted, try again."));
             continue;
         }
-        applyIpResult(ent, res);
+        records.push_back(ipResult(ent, res));
     }
+    if (!Configs::dataManager->profilesRepo->SaveTestResults(records).success)
+        MW_show_log(MainWindow::tr("Failed to save IP test results"));
 }
 
 void TestRunner::runUrlTests(const QList<int>& profileIDs, const std::function<void()>& onFinished) {
@@ -407,6 +426,7 @@ void TestRunner::runLatencyGroup(LatencyKind kind, const QList<int>& requestedID
                 probe(target);
             }
             batchDone.acquire(testCount);
+            sessionGen_.fetch_add(1);
 
             MW_show_log(isUrl ? "URL test for batch done." : "IP test for batch done.");
             runOnUiThread([=, this] {
@@ -455,12 +475,12 @@ void TestRunner::runSpeedTests(const QList<int>& requestedIDs, bool testCurrent,
         if (onFinished) onFinished();
         return;
     }
+    stopRequested_.store(false);
     sessionGen_.fetch_add(1);
 
     testingCurrent_.store(testCurrent);
 
     runOnNewThread([this, profileIDs, testCurrent, onFinished]() {
-        stopRequested_.store(false);
         { QMutexLocker lk(&creditMu_); credited_.clear(); }
         if (!testCurrent)
         {
@@ -556,18 +576,24 @@ void TestRunner::pollSpeedTest(const QMap<QString, int>& tag2entID, bool testCur
         return;
     }
     creditTraffic(profile, tag, result.ul_bytes.value(), result.dl_bytes.value());
-    runOnUiThread([this, profile, result]
+    runOnUiThread([this, profile, result, gen]
     {
+        if (staleGen(gen)) return;
         mw_->dataViewHtmlGenerator_.setSpeedtestProgress(profile->outbound->name, result);
         mw_->UpdateDataView();
 
         if (result.error.value().empty() && !result.cancelled.value())
         {
-            if (!result.dl_speed.value().empty()) profile->dl_speed = QString::fromStdString(result.dl_speed.value());
-            if (!result.ul_speed.value().empty()) profile->ul_speed = QString::fromStdString(result.ul_speed.value());
-            if (profile->latency <= 0 && result.latency.value() > 0) profile->SetLatency(result.latency.value());
-            if (!result.server_country.value().empty()) profile->test_country = CountryNameToCode(QString::fromStdString(result.server_country.value()));
-            mw_->refresh_proxy_list({profile->id});
+            std::optional<QString> dl, ul, country;
+            std::optional<int> latency;
+            if (!result.dl_speed.value().empty()) dl = QString::fromStdString(result.dl_speed.value());
+            if (!result.ul_speed.value().empty()) ul = QString::fromStdString(result.ul_speed.value());
+            if (profile->latency <= 0 && result.latency.value() > 0) latency = result.latency.value();
+            if (!result.server_country.value().empty()) country = CountryNameToCode(QString::fromStdString(result.server_country.value()));
+            const auto saved = Configs::dataManager->profilesRepo->SaveTestResults({
+                {profile->id, Configs::TestResult::Kind::Speed, latency, QDateTime::currentSecsSinceEpoch(), dl, ul, country}});
+            if (!saved.success) MW_show_log(MainWindow::tr("Failed to save speed test results"));
+            else mw_->refresh_proxy_list(saved.appliedIDs);
         }
     });
 }
@@ -581,6 +607,7 @@ void TestRunner::pollCountryTest(const QMap<QString, int>& tag2entID, bool testC
     {
         return;
     }
+    std::vector<Configs::TestResult> records;
     for (const auto& result : res.results)
     {
         mw_->dataViewHtmlGenerator_.addTestProgress();
@@ -592,16 +619,21 @@ void TestRunner::pollCountryTest(const QMap<QString, int>& tag2entID, bool testC
         {
             continue;
         }
-        runOnUiThread([this, profile, result]
-        {
-            if (result.error.value().empty() && !result.cancelled.value())
-            {
-                if (profile->latency <= 0 && result.latency.value() > 0) profile->SetLatency(result.latency.value());
-                if (!result.server_country.value().empty()) profile->test_country = CountryNameToCode(QString::fromStdString(result.server_country.value()));
-                mw_->refresh_proxy_list({profile->id});
-            }
-        });
+        if (result.error.value().empty() && !result.cancelled.value()) {
+            std::optional<int> latency;
+            std::optional<QString> country;
+            if (profile->latency <= 0 && result.latency.value() > 0) latency = result.latency.value();
+            if (!result.server_country.value().empty()) country = CountryNameToCode(QString::fromStdString(result.server_country.value()));
+            records.emplace_back(profile->id, Configs::TestResult::Kind::Speed, latency,
+                                 QDateTime::currentSecsSinceEpoch(), std::nullopt, std::nullopt, country);
+        }
     }
+    if (staleGen(gen)) return;
+    const auto saved = Configs::dataManager->profilesRepo->SaveTestResults(records);
+    if (!saved.success) MW_show_log(MainWindow::tr("Failed to save country test results"));
+    else runOnUiThread([this, saved, gen] {
+        if (!staleGen(gen)) mw_->refresh_proxy_list(saved.appliedIDs);
+    });
     mw_->UpdateDataView(true);
 }
 
@@ -645,12 +677,15 @@ void TestRunner::runSpeedProbe(const Target& target)
 
         result = defaultClient->SpeedTest(&rpcOK, req, &coreError);
     }
+    // Reject late/queued advisory ticks before publishing the authoritative final batch.
+    sessionGen_.fetch_add(1);
 
     if (!rpcOK || result.results.empty()) {
         if (!rpcOK) mw_->handleXrayGeoAssetError(coreError, contextName(contextID));
         return;
     }
 
+    std::vector<Configs::TestResult> records;
     for (const auto& res : result.results) {
         const int entid = target.testCurrent
                               ? (mw_->running ? mw_->running->id : -1)
@@ -672,18 +707,23 @@ void TestRunner::runSpeedProbe(const Target& target)
         if (res.cancelled.value()) continue;
 
         const auto error = QString::fromStdString(res.error.value());
+        std::optional<QString> dl, ul, country;
+        std::optional<int> latency;
         if (error.isEmpty()) {
-            ent->dl_speed = QString::fromStdString(res.dl_speed.value());
-            ent->ul_speed = QString::fromStdString(res.ul_speed.value());
-            if (ent->latency <= 0 && res.latency.value() > 0) ent->SetLatency(res.latency.value());
-            if (!res.server_country.value().empty()) ent->test_country = CountryNameToCode(QString::fromStdString(res.server_country.value()));
+            if ((req.test_download || req.simple_download) && !res.dl_speed.value().empty())
+                dl = QString::fromStdString(res.dl_speed.value());
+            if (req.test_upload && !res.ul_speed.value().empty()) ul = QString::fromStdString(res.ul_speed.value());
+            if (ent->latency <= 0 && res.latency.value() > 0) latency = res.latency.value();
+            if (!res.server_country.value().empty()) country = CountryNameToCode(QString::fromStdString(res.server_country.value()));
         } else {
-            ent->dl_speed = "N/A";
-            ent->ul_speed = "N/A";
-            ent->SetLatency(-1);
-            ent->test_country = "";
+            if (req.test_download || req.simple_download) dl = QStringLiteral("N/A");
+            if (req.test_upload) ul = QStringLiteral("N/A");
+            // A speed failure is not a URL latency verdict.
             MW_show_log(MainWindow::tr("[%1] speed test error: %2").arg(ent->outbound->DisplayTypeAndName(), error));
         }
-        Configs::dataManager->profilesRepo->Save(ent);
+        records.emplace_back(entid, Configs::TestResult::Kind::Speed, latency,
+                             QDateTime::currentSecsSinceEpoch(), dl, ul, country);
     }
+    if (!Configs::dataManager->profilesRepo->SaveTestResults(records).success)
+        MW_show_log(MainWindow::tr("Failed to save speed test results"));
 }

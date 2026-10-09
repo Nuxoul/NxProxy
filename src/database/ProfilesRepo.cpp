@@ -10,8 +10,11 @@
 
 
 namespace Configs {
-    ProfilesRepo::ProfilesRepo(Database& database) : db(database) {
+    ProfilesRepo::ProfilesRepo(Database& database) : db(database),
+        testResultsDb(database.Path(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE, BUSY_TIMEOUT_MS) {
         createTables();
+        testResultsDb.exec("PRAGMA foreign_keys = ON");
+        testResultsDb.exec("PRAGMA synchronous = NORMAL");
     }
 
     void ProfilesRepo::createTables() const {
@@ -477,6 +480,71 @@ namespace Configs {
         identityMap[profile->id] = std::weak_ptr<Profile>(profile);
         
         return true;
+    }
+
+    TestResultSaveOutcome ProfilesRepo::SaveTestResults(const std::vector<TestResult>& results) {
+        TestResultSaveOutcome outcome;
+        if (results.empty()) { outcome.success = true; return outcome; }
+        QMutexLocker locker(&mutex);
+        std::vector<const TestResult*> applied;
+        try {
+            SQLite::Transaction transaction(testResultsDb);
+            std::map<std::string, std::unique_ptr<SQLite::Statement>> statements;
+            for (const auto& r : results) {
+                if (r.profileId < 0) continue;
+                const bool latency = r.latency.has_value() && r.kind != TestResult::Kind::Ip;
+                const bool speed = r.kind == TestResult::Kind::Speed;
+                const bool ip = r.kind == TestResult::Kind::Ip;
+                std::string columns;
+                auto add = [&](const char* column) {
+                    if (!columns.empty()) columns += ", ";
+                    columns += std::string(column) + " = ?";
+                };
+                if (latency) { add("latency"); add("latency_at"); }
+                if (speed && r.dlSpeed) add("dl_speed");
+                if (speed && r.ulSpeed) add("ul_speed");
+                if ((ip || speed) && r.country) add("test_country");
+                if (ip && r.ip) add("ip_out");
+                if (columns.empty()) continue;
+                auto& statement = statements[columns];
+                if (!statement) statement = std::make_unique<SQLite::Statement>(testResultsDb,
+                    "UPDATE profiles SET " + columns + " WHERE id = ?");
+                auto& stmt = *statement;
+                stmt.reset(); stmt.clearBindings();
+                int index = 1;
+                if (latency) { stmt.bind(index++, *r.latency); stmt.bind(index++, static_cast<int64_t>(r.measuredAt)); }
+                if (speed && r.dlSpeed) stmt.bind(index++, r.dlSpeed->toStdString());
+                if (speed && r.ulSpeed) stmt.bind(index++, r.ulSpeed->toStdString());
+                if ((ip || speed) && r.country) stmt.bind(index++, r.country->toStdString());
+                if (ip && r.ip) stmt.bind(index++, r.ip->toStdString());
+                stmt.bind(index, r.profileId);
+                if (stmt.exec() > 0) applied.push_back(&r);
+            }
+            transaction.commit();
+        } catch (const std::exception& e) {
+            NotifyError("SaveTestResults", e);
+            return outcome;
+        }
+        // Publish only committed narrow fields, preserving concurrent config/traffic changes.
+        for (const auto* r : applied) {
+            if (!outcome.appliedIDs.contains(r->profileId)) outcome.appliedIDs.append(r->profileId);
+            auto it = identityMap.find(r->profileId);
+            if (it == identityMap.end()) continue;
+            auto profile = it->second.lock();
+            if (!profile) continue;
+            if (r->latency && r->kind != TestResult::Kind::Ip) {
+                profile->latency = *r->latency; profile->latency_at = r->measuredAt;
+            }
+            if (r->kind == TestResult::Kind::Speed) {
+                if (r->dlSpeed) profile->dl_speed = *r->dlSpeed;
+                if (r->ulSpeed) profile->ul_speed = *r->ulSpeed;
+            }
+            if ((r->kind == TestResult::Kind::Ip || r->kind == TestResult::Kind::Speed) && r->country)
+                profile->test_country = *r->country;
+            if (r->kind == TestResult::Kind::Ip && r->ip) profile->ip_out = *r->ip;
+        }
+        outcome.success = true;
+        return outcome;
     }
 
     bool ProfilesRepo::SaveTraffic(const std::shared_ptr<Profile>& profile) {

@@ -76,8 +76,7 @@ namespace Stats {
     void TrafficLooper::Loop() {
         elapsedTimer.start();
         int secs_since_save = 0;
-        while (true) {
-            QThread::msleep(1000);
+        while (waitForBackgroundWork(1000)) {
 
             if (Configs::dataManager->settingsRepo->disable_traffic_stats) {
                 continue;
@@ -114,27 +113,32 @@ namespace Stats {
                 PersistTraffic();
             }
 
-            runOnUiThread([=,this] {
-                auto m = GetMainWindow();
-                if (proxy != nullptr) {
-                    // Single line carrying both paths: the old two-line form made this chip taller
-                    // than the two beside it, so the three never shared a baseline.
-                    m->refresh_status(QString("%1 %2  %3 %4")
-                                          .arg(QObject::tr("Proxy:"), DisplaySpeed(proxy),
-                                               QObject::tr("Direct:"), DisplaySpeed(direct)));
-                    m->update_traffic_graph(proxy->downlink_rate, proxy->uplink_rate, direct->downlink_rate, direct->uplink_rate);
+            double proxyDown = 0, proxyUp = 0, directDown = 0, directUp = 0;
+            QString status;
+            QList<int> ids;
+            {
+                QMutexLocker lock(&loop_mutex);
+                if (proxy && direct) {
+                    proxyDown = proxy->downlink_rate; proxyUp = proxy->uplink_rate;
+                    directDown = direct->downlink_rate; directUp = direct->uplink_rate;
+                    status = QString("%1 %2  %3 %4")
+                                 .arg(QObject::tr("Proxy:"), DisplaySpeed(proxy),
+                                      QObject::tr("Direct:"), DisplaySpeed(direct));
                 }
-                QList<int> ids;
                 QSet<int> seen;
-                for (const auto& group : groups) {
-                    for (const auto& profile : group.profiles) {
-                        if (!profile || profile->id < 0) continue;
-                        if (seen.contains(profile->id)) continue;
-                        seen.insert(profile->id);
-                        ids << profile->id;
-                    }
+                for (const auto& group : groups) for (const auto& profile : group.profiles) {
+                    if (!profile || profile->id < 0 || seen.contains(profile->id)) continue;
+                    seen.insert(profile->id); ids.append(profile->id);
                 }
-                if (!ids.isEmpty()) m->refresh_proxy_list(ids);
+            }
+            // UI callbacks own values only: no off-lock access to mutable group/rate state.
+            runOnUiThread([status, ids, proxyDown, proxyUp, directDown, directUp] {
+                if (Configs::dataManager->settingsRepo->prepare_exit) return;
+                if (auto* m = GetMainWindow()) {
+                    if (!status.isEmpty()) m->refresh_status(status);
+                    m->update_traffic_graph(proxyDown, proxyUp, directDown, directUp);
+                    if (!ids.isEmpty()) m->refresh_proxy_list(ids);
+                }
             });
         }
     }

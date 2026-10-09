@@ -371,7 +371,7 @@ void MainWindow::dialog_message_impl(MwMessage cmd, const QStringList &args) {
             set_system_dns(true);
         }
         if (auto id = args.value(0).toInt(); id >= 0) {
-            profile_start(id);
+            profile_start(id, true, args.value(1).toULongLong());
         }
         if (settings->system_dns_set) {
             set_system_dns(true);

@@ -1,5 +1,6 @@
 #include <QThread>
 #include <QDateTime>
+#include <QUuid>
 #include <core/gen/libcore.pb.h>
 #include <include/api/RPC.h>
 #include "include/ui/mainwindow_interface.h"
@@ -27,6 +28,25 @@ namespace Stats
         QMutexLocker lk(&outboundDisplayMu);
         return outboundDisplayNames.value(tag, tag);
     }
+    QString ConnectionOutboundDisplayName(const QString& outbound, const QStringList& chain)
+    {
+        QMutexLocker lock(&outboundDisplayMu);
+        QString group, node;
+        // sing-box records leaf-to-selector chain order. Select the actual group
+        // traversed by this connection and the actual leaf, never a group's current pick.
+        for (const auto& tag : chain) {
+            const auto label = outboundDisplayNames.value(tag);
+            if (tag.startsWith("selector-") && !label.isEmpty()) group = label;
+            else if (node.isEmpty() && !label.isEmpty()) node = label;
+        }
+        const auto leaf = outboundDisplayNames.value(outbound, outbound);
+        if (node.isEmpty()) node = leaf;
+        // The independent legacy path already labels its member "group -> node".
+        if (node.contains(QStringLiteral(" → "))) return node;
+        if (!group.isEmpty() && group != node) return group + QStringLiteral(" → ") + node;
+        return node;
+    }
+
     // Guards out-of-band ForceUpdate() polls: a tiny byte delta over a tiny interval reads as a spike.
     static constexpr qint64 kSpeedSampleMinMs = 500;
 
@@ -92,6 +112,8 @@ namespace Stats
     static ConnectionMetadata metaFromProto(const libcore::ConnectionMetaData& conn, const QString& localLabel)
     {
         ConnectionMetadata c;
+        c.id = QString::fromStdString(conn.id.value());
+        for (const auto& tag : conn.chain) c.chain.append(QString::fromStdString(tag));
         c.createdAtMs = conn.created_at.value();
         c.dest = QString::fromStdString(conn.dest.value());
         c.upload = conn.upload.value();
@@ -99,7 +121,7 @@ namespace Stats
         c.domain = QString::fromStdString(conn.domain.value());
         c.network = QString::fromStdString(conn.network.value());
         c.outbound = QString::fromStdString(conn.outbound.value());
-        c.outboundDisplay = OutboundDisplayName(c.outbound);
+        c.outboundDisplay = ConnectionOutboundDisplayName(c.outbound, c.chain);
         c.process = QString::fromStdString(conn.process.value());
         c.processPath = QString::fromStdString(conn.process_path.value());
         c.protocol = QString::fromStdString(conn.protocol.value());
@@ -158,7 +180,25 @@ namespace Stats
 
     void ConnectionLister::update(const bool pushToUi)
     {
-        libcore::QueryConnectionsResp resp = API::defaultClient->QueryConnections();
+        if (snapshotInvalidated_.exchange(false)) {
+            connectionSnapshot_.reset(); deltaClientID_.clear(); metadataCache_.clear();
+        }
+        libcore::QueryConnectionsResp resp;
+        bool rpcOK = false;
+        if (API::defaultClient->Capabilities().connection_delta.value_or(false)) {
+            if (deltaClientID_.isEmpty()) deltaClientID_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            auto delta = API::defaultClient->QueryConnectionsDelta(&rpcOK, connectionSnapshot_.request(deltaClientID_));
+            if (rpcOK && connectionSnapshot_.apply(delta)) resp = connectionSnapshot_.snapshot();
+            else {
+                connectionSnapshot_.reset();
+                resp = API::defaultClient->QueryConnections(&rpcOK);
+            }
+        } else {
+            connectionSnapshot_.reset();
+            resp = API::defaultClient->QueryConnections(&rpcOK);
+        }
+        // Failed transport is not an empty snapshot; preserve the accounting baseline.
+        if (!rpcOK) return;
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         const QString localLabel = QObject::tr("Local");
 
@@ -166,10 +206,18 @@ namespace Stats
         rows.reserve(static_cast<qsizetype>(resp.active.size()));
         QHash<QString, SpeedSample> newSamples;
         newSamples.reserve(static_cast<qsizetype>(resp.active.size()));
+        QHash<QString, ConnectionMetadata> newMetadata;
+        newMetadata.reserve(static_cast<qsizetype>(resp.active.size()));
 
         for (const auto& conn : resp.active)
         {
-            auto c = metaFromProto(conn, localLabel);
+            const auto id = QString::fromStdString(conn.id.value());
+            auto cached = metadataCache_.constFind(id);
+            auto c = cached == metadataCache_.cend() ? metaFromProto(conn, localLabel) : *cached;
+            c.upload = conn.upload.value(); c.download = conn.download.value();
+            c.closedAtMs = conn.closed_at.value();
+            c.outboundDisplay = ConnectionOutboundDisplayName(c.outbound, c.chain);
+            newMetadata.insert(id, c);
 
             SpeedSample s;
             if (const auto it = speedSamples_.constFind(c.id); it != speedSamples_.constEnd())
@@ -205,48 +253,16 @@ namespace Stats
             rows.append(std::move(c));
         }
         speedSamples_ = newSamples; // drop ids for connections that have closed
+        metadataCache_ = std::move(newMetadata); // bounded by the current active set only
 
         // Credits the live set plus the recently-closed ring (deduped by id), so a connection that opened and closed between polls still counts.
         if (!Configs::dataManager->settingsRepo->disable_traffic_stats)
         {
-            QHash<QString, QPair<qint64, qint64>> newLast;
-            QSet<QString> currentClosed;
-
-            auto credit = [&](const libcore::ConnectionMetaData& cm, qint64 curUp, qint64 curDown)
-            {
-                const QString id = QString::fromStdString(cm.id.value());
-                qint64 baseUp = 0, baseDown = 0;
-                if (const auto it = lastBytes_.constFind(id); it != lastBytes_.constEnd())
-                {
-                    baseUp = it->first;
-                    baseDown = it->second;
-                }
-                qint64 dUp = curUp - baseUp;
-                qint64 dDown = curDown - baseDown;
-                if (dUp < 0) dUp = 0;
-                if (dDown < 0) dDown = 0;
-                if (dUp == 0 && dDown == 0) return;
+            accounting_.consume(resp, [&](const libcore::ConnectionMetaData& cm, qint64 up, qint64 down) {
                 QString name = QString::fromStdString(cm.process.value());
                 if (name.isEmpty()) name = "Unknown";
-                trafficStatsManager->AddAppDelta(name, QString::fromStdString(cm.process_path.value()), dUp, dDown);
-            };
-
-            for (const auto& cm : resp.active)
-            {
-                const qint64 up = cm.upload.value();
-                const qint64 down = cm.download.value();
-                credit(cm, up, down);
-                newLast.insert(QString::fromStdString(cm.id.value()), {up, down});
-            }
-            for (const auto& cm : resp.closed)
-            {
-                const QString id = QString::fromStdString(cm.id.value());
-                currentClosed.insert(id);
-                if (accountedClosed_.contains(id)) continue;
-                credit(cm, cm.upload.value(), cm.download.value());
-            }
-            lastBytes_ = newLast;             // drop evicted / now-closed live ids
-            accountedClosed_ = currentClosed; // everything in the ring is accounted
+                trafficStatsManager->AddAppDelta(name, QString::fromStdString(cm.process_path.value()), up, down);
+            });
         }
 
         if (!pushToUi) return;
@@ -279,7 +295,7 @@ namespace Stats
             sortSmallestFirst(rows, asc, [](const ConnectionMetadata& c) -> const QString& { return c.process; });
             break;
         case ByOutbound:
-            sortSmallestFirst(rows, asc, [](const ConnectionMetadata& c) -> const QString& { return c.outbound; });
+            sortSmallestFirst(rows, asc, [](const ConnectionMetadata& c) -> const QString& { return c.outboundDisplay; });
             break;
         case ByProtocol:
             sortSmallestFirst(rows, asc, [](const ConnectionMetadata& c) -> const QString& { return c.protocol; });
@@ -289,8 +305,26 @@ namespace Stats
             break;
         }
 
-        runOnUiThread([rows = std::move(rows)] {
-            if (auto* m = GetMainWindow()) m->UpdateConnectionList(rows);
+        publishLatest(std::move(rows));
+    }
+
+    void ConnectionLister::publishLatest(QList<ConnectionMetadata> rows)
+    {
+        {
+            QMutexLocker lock(&uiSnapshotMu_);
+            latestRows_ = std::move(rows);
+            if (uiUpdateQueued_) return;
+            uiUpdateQueued_ = true;
+        }
+        runOnUiThread([this] {
+            QList<ConnectionMetadata> current;
+            {
+                QMutexLocker lock(&uiSnapshotMu_);
+                current.swap(latestRows_);
+                uiUpdateQueued_ = false;
+            }
+            if (Configs::dataManager->settingsRepo->prepare_exit) return;
+            if (auto* m = GetMainWindow()) m->UpdateConnectionList(current);
         });
     }
 

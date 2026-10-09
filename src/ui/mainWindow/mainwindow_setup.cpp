@@ -215,6 +215,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(core_server, &QLocalServer::newConnection, this, [=, this]() {
         auto socket = core_server->nextPendingConnection();
         int profileId = -1;
+        quint64 recoveryToken = 0;
         {
             // Hold coreProcessMutex: DS_cores may still be constructing core_process.
             QMutexLocker lock(&coreProcessMutex);
@@ -225,14 +226,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                 return;
             }
             if (core_process) {
-                profileId = core_process->start_profile_when_core_is_up;
-                core_process->start_profile_when_core_is_up = -1;
+                profileId = core_process->ConsumeProfileToRestore();
+                recoveryToken = core_process->RestartGeneration();
             }
         }
         setup_rpc(socket);
         Configs::dataManager->settingsRepo->core_running = true;
         LOG_INFO(QString("elevated: %1").arg(Configs::IsAdmin() ? "yes" : "no"));
-        MW_dialog_message(MwMessage::CoreStarted, {Int2String(profileId)});
+        MW_dialog_message(MwMessage::CoreStarted, {Int2String(profileId), QString::number(recoveryToken)});
     });
 
     auto socketFullName = core_server->fullServerName();
@@ -242,8 +243,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             core_process = new Configs_sys::CoreProcess(core_path, socketFullName, coreDebugMode);
             if (Configs::dataManager->settingsRepo->remember_enable &&
                 Configs::dataManager->settingsRepo->remember_id >= 0) {
-                core_process->start_profile_when_core_is_up =
-                    Configs::dataManager->settingsRepo->remember_id;
+                core_process->SetProfileToRestore(Configs::dataManager->settingsRepo->remember_id);
             }
             core_process->Start();
         },
@@ -506,7 +506,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         } else {
             testResultSortActive = false;
         }
-        runOnNewThread([=, this] {
+        if (!runOnBackgroundTask([=, this] {
             auto currGroup = Configs::dataManager->groupsRepo->CurrentGroup();
             if (currGroup == nullptr) return;
             if (!currGroup->SortProfiles(action)) {
@@ -519,7 +519,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             runOnUiThread([=, this] {
                 refresh_proxy_list({}, true);
             });
-        });
+        }, this)) MW_show_log(tr("Background task queue is full; sorting was skipped."));
     });
     connect(ui->profilesTableView->horizontalHeader(), &QHeaderView::sectionResized, this, [=, this](int, int, int) {
         auto group = Configs::dataManager->groupsRepo->CurrentGroup();
@@ -569,7 +569,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             action.method = group->type_sort_by == Configs::typeBy::bySecurity
                                 ? GroupSortMethod::BySecurity
                                 : GroupSortMethod::ByType;
-            runOnNewThread([=, this] {
+            if (!runOnBackgroundTask([=, this] {
                 auto currGroup = Configs::dataManager->groupsRepo->CurrentGroup();
                 if (currGroup == nullptr) return;
                 if (!currGroup->SortProfiles(action)) {
@@ -582,7 +582,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                 runOnUiThread([=, this] {
                     refresh_proxy_list({}, true);
                 });
-            });
+            }, this)) MW_show_log(tr("Background task queue is full; sorting was skipped."));
             return;
         }
         if (columnIndex == ProfilesTableModel::ColTestResult) {
@@ -646,7 +646,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             GroupSortAction action;
             action.method = GroupSortMethod::ByTestResult;
             action.descending = true;
-            runOnNewThread([=, this] {
+            if (!runOnBackgroundTask([=, this] {
                 auto currGroup = Configs::dataManager->groupsRepo->CurrentGroup();
                 if (currGroup == nullptr) return;
                 if (!currGroup->SortProfiles(action)) {
@@ -659,7 +659,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                 runOnUiThread([=, this] {
                     refresh_proxy_list({}, true);
                     });
-                });
+                }, this)) MW_show_log(tr("Background task queue is full; sorting was skipped."));
             return;
         }
         if (columnIndex == ProfilesTableModel::ColTraffic) {
@@ -690,7 +690,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             GroupSortAction action;
             action.method = GroupSortMethod::ByTraffic;
             action.descending = false;
-            runOnNewThread([=, this] {
+            if (!runOnBackgroundTask([=, this] {
                 auto currGroup = Configs::dataManager->groupsRepo->CurrentGroup();
                 if (currGroup == nullptr) return;
                 if (!currGroup->SortProfiles(action)) {
@@ -703,7 +703,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                 runOnUiThread([=, this] {
                     refresh_proxy_list();
                     });
-                });
+                }, this)) MW_show_log(tr("Background task queue is full; sorting was skipped."));
             return;
         }
         QMenu menu(this);
@@ -1244,7 +1244,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                 const QList<int> targets(distinct.constBegin(), distinct.constEnd());
                 testRunner->runUrlTests(targets, [this, measuredGroups] {
                     // URL sweeps always order by latency, not the group's last speed/IP sort choice.
-                    runOnNewThread([this, measuredGroups] {
+                    if (!runOnBackgroundTask([this, measuredGroups] {
                         for (const int gid : measuredGroups) {
                             const auto group = Configs::dataManager->groupsRepo->GetGroup(gid);
                             if (group == nullptr) continue;
@@ -1258,7 +1258,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                             refresh_proxy_list({}, true);
                             refresh_selector_panel();
                         });
-                    });
+                    }, this)) MW_show_log(tr("Background task queue is full; sorting was skipped."));
                 });
             },
         });

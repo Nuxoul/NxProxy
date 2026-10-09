@@ -28,10 +28,7 @@ namespace Stats {
         // Catch-up pass first: downsample whatever aged past the window while the app was closed.
         runOnNewThread([this] {
             runRollupOnce();
-            while (true) {
-                QThread::msleep(kRollupIntervalMs);
-                runRollupOnce();
-            }
+            while (waitForBackgroundWork(kRollupIntervalMs)) runRollupOnce();
         });
     }
 

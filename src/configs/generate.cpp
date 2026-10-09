@@ -188,6 +188,7 @@ namespace Configs {
 
         struct BuildContext {
             bool forTest = false;
+            bool shareSelectorOutbounds = false;
             bool tunEnabled = false;
             bool l3Bridge = false;
             bool isResolvedUsed = false;
@@ -1532,7 +1533,8 @@ namespace Configs {
 
         QString buildOutboundChain(BuildContext &ctx, const ChainBuildRequest &req)
         {
-            const auto ingressTag = req.includeProxy ? QString(tags::proxy) : hopTag(req.prefix, req.startSuffix);
+            const auto ingressTag = !req.explicitTag.isEmpty() ? req.explicitTag
+                                  : req.includeProxy ? QString(tags::proxy) : hopTag(req.prefix, req.startSuffix);
 
             ctx.singToXrayTransitioned = false;
             ctx.xrayToSingTransitioned = false;
@@ -1940,6 +1942,12 @@ namespace Configs {
                 }
             }
 
+            // Build-local identity registry: only fixed, ordinary sing-box selector members.
+            // Include the complete effective JSON (TLS, resolver, dial fields, transport,
+            // mux, etc.) and profile id. Never share route chains, endpoints, custom or
+            // Xray resources, nor different profiles that happen to have the same name.
+            QMap<QByteArray, QString> sharedMembers;
+            QMap<QString, QString> memberAliases;
             int routeSuffix = 0;
             for (const auto& routeGroup : ctx.prerequisites.routing.routeOutboundGroups) {
                 buildOutboundChain(ctx, {
@@ -1952,39 +1960,64 @@ namespace Configs {
                 if (!ctx.error.isEmpty()) return;
                 if (routeGroup.chainWrapper != nullptr && !ctx.result->chainGroups.isEmpty())
                     ctx.result->chainGroups.last().profiles.append(routeGroup.chainWrapper);
+                if (ctx.shareSelectorOutbounds && !routeGroup.explicitTag.isEmpty()
+                    && routeGroup.hopIDs.size() == 1 && !ctx.outbounds.isEmpty()) {
+                    const auto member = getProfile(routeGroup.hopIDs.first());
+                    static const QSet<QString> ordinaryTypes{
+                        "vless", "vmess", "trojan", "shadowsocks", "socks", "http"};
+                    if (member != nullptr && member->outbound != nullptr
+                        && ordinaryTypes.contains(member->type) && !member->outbound->IsXray()
+                        && !member->outbound->IsEndpoint() && !member->outbound->IsExtraCore()) {
+                        auto runtime = ctx.outbounds.last().toObject();
+                        if (runtime["tag"].toString() == routeGroup.explicitTag
+                            && runtime["type"].toString() == member->type
+                            && runtime["detour"].toString().isEmpty()) {
+                            runtime.remove("tag");
+                            const auto identity = QByteArray::number(member->id) + ':'
+                                                + QJsonDocument(runtime).toJson(QJsonDocument::Compact);
+                            const auto existing = sharedMembers.constFind(identity);
+                            if (existing != sharedMembers.cend()) {
+                                memberAliases.insert(routeGroup.explicitTag, existing.value());
+                                ctx.outbounds.removeLast();
+                                ctx.result->outboundDisplayNames.remove(routeGroup.explicitTag);
+                                // This watchTag already credits this same profile once. Do not
+                                // credit a shared node once per selector that can reach it.
+                                ctx.result->chainGroups.removeLast();
+                            } else {
+                                sharedMembers.insert(identity, routeGroup.explicitTag);
+                            }
+                        }
+                    }
+                }
                 routeSuffix += static_cast<int>(routeGroup.hopIDs.size());
             }
             for (const auto& selectorGroup : ctx.prerequisites.routing.selectorGroups) {
                 QJsonArray memberTags;
                 QString defaultTag;
-                QString selectedDisplay;
                 if (selectorGroup.profile == nullptr) {
                     ctx.error = QObject::tr("Selector group could not resolve its profile");
                     return;
                 }
                 const QString selectorTag = QString("selector-%1").arg(selectorGroup.profile->id);
                 for (qsizetype i = 0; i < selectorGroup.memberTags.size(); ++i) {
-                    memberTags.append(selectorGroup.memberTags[i]);
+                    const auto memberTag = memberAliases.value(selectorGroup.memberTags[i], selectorGroup.memberTags[i]);
+                    memberTags.append(memberTag);
                     const auto member = getProfile(selectorGroup.members[i]);
                     const QString nodeName = member != nullptr && member->outbound != nullptr
                                                  ? member->outbound->DisplayName()
                                                  : QString::number(selectorGroup.members[i]);
-                    const QString display = selectorGroup.profile->name + " → " + nodeName;
-                    ctx.result->outboundDisplayNames.insert(selectorGroup.memberTags[i], display);
+                    ctx.result->outboundDisplayNames.insert(memberTag, nodeName);
                     ctx.result->selectorMemberTags[selectorGroup.profile->id].insert(selectorGroup.members[i],
-                                                                                    selectorGroup.memberTags[i]);
+                                                                                    memberTag);
                     if (selectorGroup.members[i] == selectorGroup.selectedID) {
-                        defaultTag = selectorGroup.memberTags[i];
-                        selectedDisplay = display;
+                        defaultTag = memberTag;
                     }
                 }
                 if (memberTags.isEmpty() || defaultTag.isEmpty()) {
                     ctx.error = QObject::tr("Selector group could not resolve its member outbounds");
                     return;
                 }
-                ctx.result->outboundDisplayNames.insert(selectorTag, selectedDisplay.isEmpty()
-                                                            ? selectorGroup.profile->name
-                                                            : selectedDisplay);
+                ctx.result->outboundDisplayNames.insert(selectorTag, selectorGroup.profile->name);
                 ctx.outbounds.append(QJsonObject{
                     {"type", "selector"},
                     {"tag", selectorTag},
@@ -2505,6 +2538,11 @@ namespace Configs {
     }
 
     std::shared_ptr<BuildConfigResult> BuildSingBoxConfig(const std::shared_ptr<Profile>& ent) {
+        return BuildSingBoxConfig(ent, BuildConfigOptions{});
+    }
+
+    std::shared_ptr<BuildConfigResult> BuildSingBoxConfig(const std::shared_ptr<Profile>& ent,
+                                                       const BuildConfigOptions& options) {
         if (ent->type == "custom")
         {
             auto res = std::make_shared<BuildConfigResult>();
@@ -2539,6 +2577,7 @@ namespace Configs {
         }
 
         BuildContext ctx;
+        ctx.shareSelectorOutbounds = options.shareSelectorOutbounds;
         ctx.ent = ent;
         ctx.result->involvedProfiles = {ent->id};
         buildProfileSink = &ctx.result->involvedProfiles;

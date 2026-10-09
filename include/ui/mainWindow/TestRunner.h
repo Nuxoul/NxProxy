@@ -16,7 +16,7 @@
 #include <core/gen/libcore.pb.h>
 #endif
 
-#include "include/database/entities/Profile.h"
+#include "include/database/ProfilesRepo.h"
 
 class MainWindow;
 
@@ -71,10 +71,10 @@ private:
 
     void runSpeedProbe(const Target& target);
 
-    void applyUrlResult(const std::shared_ptr<Configs::Profile>& ent, const libcore::URLTestResp& res,
+    Configs::TestResult urlResult(const std::shared_ptr<Configs::Profile>& ent, const libcore::URLTestResp& res,
                         const QHash<QString, bool>* vpnConnected = nullptr);
 
-    void applyIpResult(const std::shared_ptr<Configs::Profile>& ent, const libcore::IPTestRes& res);
+    Configs::TestResult ipResult(const std::shared_ptr<Configs::Profile>& ent, const libcore::IPTestRes& res);
 
     QString contextName(int entID) const;
 

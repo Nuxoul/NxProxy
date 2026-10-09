@@ -235,6 +235,13 @@ void HideWindow(QWidget *w);
 void runOnUiThread(const std::function<void()> &callback, bool wait = false);
 
 void runOnNewThread(const std::function<void()> &callback, bool wait = false);
+// Bounded short-task admission. False means no task was queued; caller must handle it.
+bool runOnBackgroundTask(const std::function<void()>& callback, QObject* owner = nullptr);
+// A cancellable sleep for long-lived workers; false once shutdown begins.
+bool waitForBackgroundWork(unsigned long milliseconds);
+void requestBackgroundStop();
+bool finishBackgroundWork(int timeoutMs = 10000);
+int backgroundShortTaskCount();
 
 void runOnThread(const std::function<void()> &callback, QObject *parent, bool wait = false);
 

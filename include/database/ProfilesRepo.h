@@ -6,13 +6,35 @@
 #include <memory>
 #include <mutex>
 #include <map>
+#include <optional>
+#include <vector>
 #include <QString>
 #include <QJsonObject>
 
 namespace Configs {
+    // Value snapshots, never pointers to mutable profile/configuration state.
+    struct TestResult {
+        enum class Kind { Url, Ip, Speed, Health };
+        const int profileId;
+        const Kind kind;
+        const std::optional<int> latency;
+        const qint64 measuredAt;
+        const std::optional<QString> dlSpeed, ulSpeed, country, ip;
+        TestResult(int id, Kind kind, std::optional<int> latency = {}, qint64 at = 0,
+                   std::optional<QString> dl = {}, std::optional<QString> ul = {},
+                   std::optional<QString> country = {}, std::optional<QString> ip = {})
+            : profileId(id), kind(kind), latency(latency), measuredAt(at),
+              dlSpeed(std::move(dl)), ulSpeed(std::move(ul)), country(std::move(country)), ip(std::move(ip)) {}
+    };
+    struct TestResultSaveOutcome {
+        bool success = false;
+        QList<int> appliedIDs; // Published only after COMMIT; missing IDs are skipped.
+    };
     class ProfilesRepo {
     private:
         Database& db;
+        // Isolated connection: asynchronous traffic writes cannot join this transaction.
+        SQLite::Database testResultsDb;
         mutable std::mutex mutex;
         mutable std::map<int, std::weak_ptr<Profile>> identityMap;
 
@@ -69,6 +91,9 @@ namespace Configs {
         
         // No-op unless id >= 0.
         bool Save(const std::shared_ptr<Profile>& profile);
+
+        // Synchronous, one transaction, UPDATE only. On failure cache and appliedIDs stay unchanged.
+        [[nodiscard]] TestResultSaveOutcome SaveTestResults(const std::vector<TestResult>& results);
 
         // Blind UPDATE of the traffic columns: no existence check.
         bool SaveTraffic(const std::shared_ptr<Profile>& profile);

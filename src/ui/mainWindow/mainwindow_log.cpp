@@ -55,8 +55,12 @@ void MainWindow::append_log(const QString &log) {
 void MainWindow::log_process_loop() {
     while (true) {
         logMutex.lock();
-        while (logQueue.isEmpty()) {
+        while (logQueue.isEmpty() && !Configs::dataManager->settingsRepo->prepare_exit) {
             logWaiter.wait(&logMutex);
+        }
+        if (logQueue.isEmpty() && Configs::dataManager->settingsRepo->prepare_exit) {
+            logMutex.unlock();
+            return;
         }
         QQueue<QString> pending;
         pending.swap(logQueue);

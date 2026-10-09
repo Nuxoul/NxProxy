@@ -1,228 +1,432 @@
 #include "include/api/RPC.h"
 #include <utility>
-
 #include "include/global/Configs.hpp"
-
 #include <QLocalSocket>
 #include <QDataStream>
-#include <QAtomicInt>
 #include <QMap>
-#include <QMutex>
 #include <QObject>
 #include <QThread>
-
+#include <QTimer>
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
 #include <atomic>
 #include <exception>
 #include <memory>
+#include <deque>
+#include <algorithm>
 
 namespace API {
-
-    // Wire format (LE): req = [u32 id][u16 nameLen][name][u32 dataLen][data]; rsp = [u32 id][u8 status 0=OK][u32 dataLen][data]
-    // `sock`/`read_buf` are io_thread-only: every socket access is queued to `io_anchor`, so Reconnect's swap cannot race a write.
-    // PendingCall is shared_ptr-owned by both Call() and `pending`, so a timed-out Call() cannot destroy it while io_thread notifies.
+    // Existing LE framing is unchanged. Budgets mirror core/internal/rpc/dispatch.go.
+    // No unbounded invokeMethod(frame) queue: one bounded priority deque owns writes.
     class Client::LocalSocketChannel {
-
-        struct PendingCall {
-            std::mutex          mu;
-            std::condition_variable cv;
-            bool                done   = false;
-            quint8              status = 1;
-            QByteArray          data;
-        };
-
-        QThread      *io_thread;
-        QObject      *io_anchor;
-        QLocalSocket *sock = nullptr;
-        QByteArray    read_buf;
-
-        QAtomicInt    next_id{1};
-        std::mutex    pending_mu;
-        QMap<quint32, std::shared_ptr<PendingCall>> pending;
-
-        std::atomic<bool> connected_{false};
-
+        static constexpr qint64 kRequestMax = 96LL << 20;
+        static constexpr qint64 kResponseMax = 128LL << 20;
+        static constexpr qint64 kRequestBudget = 128LL << 20;
+        static constexpr qint64 kResponseBudget = 192LL << 20;
+        static constexpr qint64 kControlMax = 64LL << 10;
+        static constexpr int kOrdinarySlots = 8;
+        static constexpr int kControlSlots = 4;
         static constexpr int kIOTimeoutMs = 30000;
+        static constexpr qint64 kSocketWindow = 1LL << 20;
+        using Clock = std::chrono::steady_clock;
+        struct PendingCall {
+            std::mutex mu;
+            std::condition_variable cv;
+            bool done = false;
+            quint8 status = 1;
+            QByteArray data;
+            QString method;
+            bool control = false;
+            bool internal = false;
+            bool handshake = false;
+            Clock::time_point deadline;
+            qint64 responseReservation = 0;
+        };
+        struct Outbound {
+            quint32 id;
+            quint64 generation;
+            bool control;
+            QByteArray frame;
+            qint64 offset = 0;
+        };
+        QThread *io_thread;
+        QObject *io_anchor;
+        QTimer *timer = nullptr;
+        QLocalSocket *sock = nullptr; // IO-thread only
+        QByteArray read_buf;
+        qint64 expectedSize = 9;
+        quint32 readingID = 0;
+        quint8 readingStatus = 1;
+        bool readingPayload = false;
+        std::shared_ptr<PendingCall> readingCall;
+        qint64 readingReservation = 0;
+        Clock::time_point readStarted{};
+        Clock::time_point writeStarted{};
+        quint64 ioGeneration = 0;
+        std::atomic<bool> connected_{false};
+        std::atomic<quint64> generation_{0};
+        std::atomic<quint32> next_id{1};
+        std::atomic<qint64> responseBytes{0};
+        std::atomic<qint64> controlResponseBytes{0};
+        mutable std::mutex pending_mu;
+        bool pumpScheduled = false;
+        QMap<quint32, std::shared_ptr<PendingCall>> pending;
+        int ordinaryPending = 0, controlPending = 0;
+        qint64 ordinaryQueuedBytes = 0, controlQueuedBytes = 0;
+        std::deque<Outbound> ordinaryWrites, controlWrites;
+        struct Cancellation { quint32 id; QString method; quint64 generation; };
+        std::deque<Cancellation> cancellations; // bounded by eight ordinary calls
+        Outbound currentWrite{};
+        libcore::RPCCapabilities capabilities;
 
-    public:
-        static constexpr int CallOK = 0;
-        static constexpr int CallNotConnected = -1919;
-
-    private:
-
-        void onReadyRead() {
-            if (sock == nullptr) return;
-            read_buf += sock->readAll();
-            processBuffer();
+        static bool isControl(const QString &name) {
+            return name == "Stop" || name == "StopTest" || name == "StopDiagnostics" ||
+                   name == "CancelRequest" || name == "CancelVPNChallenge" || name == "QueryCapabilities";
         }
-
+        bool cancelSupportedLocked(const QString &method) const {
+            return capabilities.cancel_request.value_or(false) &&
+                std::find(capabilities.cancelable_methods.begin(), capabilities.cancelable_methods.end(),
+                          method.toStdString()) != capabilities.cancelable_methods.end();
+        }
+        void erasePendingLocked(quint32 id) {
+            auto it = pending.find(id);
+            if (it == pending.end()) return;
+            if (it.value()->control) --controlPending; else --ordinaryPending;
+            pending.erase(it);
+        }
+        bool reserveResponse(qint64 bytes, bool control) {
+            auto &counter = control ? controlResponseBytes : responseBytes;
+            const qint64 budget = control ? kControlSlots * kControlMax : kResponseBudget;
+            auto used = counter.load();
+            do {
+                if (bytes > budget - used) return false;
+            } while (!counter.compare_exchange_weak(used, used + bytes));
+            return true;
+        }
+        void clearReader() {
+            if (readingReservation) (readingCall && readingCall->control ? controlResponseBytes : responseBytes).fetch_sub(readingReservation);
+            readingReservation = 0;
+            readingCall.reset();
+            read_buf.clear();
+            expectedSize = 9;
+            readingPayload = false;
+            readStarted = {};
+        }
         void wakeAllWithError() {
             connected_.store(false, std::memory_order_release);
             std::lock_guard<std::mutex> lock(pending_mu);
+            capabilities = {};
             for (auto &call : pending) {
                 std::lock_guard<std::mutex> cg(call->mu);
                 call->done = true;
+                call->status = 1;
                 call->cv.notify_one();
             }
             pending.clear();
+            ordinaryPending = controlPending = 0;
+            ordinaryWrites.clear(); controlWrites.clear(); cancellations.clear();
+            ordinaryQueuedBytes = controlQueuedBytes = 0;
         }
-
-        void processBuffer() {
-            // Response header: 4 (reqId) + 1 (status) + 4 (dataLen) = 9 bytes
-            while (read_buf.size() >= 9) {
-                quint32 reqId, dataLen;
-                quint8  status;
-                {
-                    QDataStream ds(read_buf);
-                    ds.setByteOrder(QDataStream::LittleEndian);
-                    ds >> reqId >> status >> dataLen;
-                }
-
-                qint64 totalSize = qint64(9) + dataLen;
-                if (read_buf.size() < totalSize) break;
-
-                QByteArray data = read_buf.mid(9, static_cast<int>(dataLen));
-                read_buf.remove(0, totalSize);
-
-                std::shared_ptr<PendingCall> call;
-                {
-                    std::lock_guard<std::mutex> lock(pending_mu);
-                    call = pending.value(reqId, nullptr);
-                    if (call) pending.remove(reqId);
-                }
-                if (call) {
-                    // Hold call->mu across the notify: a waking Call() must not destroy the cv mid-notification.
-                    std::lock_guard<std::mutex> cg(call->mu);
-                    call->status = status;
-                    call->data   = std::move(data);
-                    call->done   = true;
+        void failConnection() {
+            wakeAllWithError();
+            clearReader();
+            currentWrite = {};
+            writeStarted = {};
+            if (sock) sock->abort();
+        }
+        void finishResponse() {
+            // Publish before dropping pending_mu: a timeout that loses to the
+            // reader observes a completed call, never an unowned reservation.
+            std::lock_guard<std::mutex> pendingLock(pending_mu);
+            auto call = readingCall;
+            if (call && pending.value(readingID) == call) erasePendingLocked(readingID);
+            else call.reset();
+            if (call) {
+                if (call->handshake) {
+                    libcore::RPCCapabilities negotiated;
+                    if (readingStatus == 0) {
+                        try { negotiated = spb::pb::deserialize<libcore::RPCCapabilities>(read_buf); }
+                        catch (...) { negotiated = {}; }
+                    }
+                    capabilities = std::move(negotiated);
+                } else if (!call->internal) {
+                    std::lock_guard<std::mutex> lock(call->mu);
+                    call->status = readingStatus;
+                    call->data = std::move(read_buf);
+                    call->responseReservation = readingReservation;
+                    readingReservation = 0;
+                    call->done = true;
                     call->cv.notify_one();
                 }
             }
+            clearReader();
         }
-
+        void onReadyRead() {
+            // Read only the validated current frame. QLocalSocket's own buffer is
+            // bounded too; no readAll or speculative allocation from dataLen.
+            while (sock && sock->bytesAvailable() > 0) {
+                if (readStarted == Clock::time_point{}) readStarted = Clock::now();
+                const auto have = readingPayload && !readingCall ? qint64(0) : qint64(read_buf.size());
+                const qint64 need = expectedSize - have;
+                const qint64 amount = qMin(qMin(need, sock->bytesAvailable()), qint64(64 << 10));
+                if (amount <= 0) { failConnection(); return; }
+                auto chunk = sock->read(amount);
+                if (chunk.isEmpty()) return;
+                if (readingPayload && !readingCall) expectedSize -= chunk.size();
+                else read_buf += chunk;
+                if ((!readingCall && readingPayload && expectedSize == 0) || read_buf.size() == expectedSize) {
+                    if (readingPayload) { finishResponse(); continue; }
+                    quint32 dataLen;
+                    QDataStream ds(read_buf);
+                    ds.setByteOrder(QDataStream::LittleEndian);
+                    ds >> readingID >> readingStatus >> dataLen;
+                    if (dataLen > kResponseMax || readingStatus > 1) { failConnection(); return; }
+                    {
+                        std::lock_guard<std::mutex> lock(pending_mu);
+                        readingCall = pending.value(readingID);
+                    }
+                    if (readingCall && readingCall->control && dataLen > kControlMax) { failConnection(); return; }
+                    if (readingCall && !reserveResponse(dataLen, readingCall->control)) { failConnection(); return; }
+                    readingReservation = readingCall ? dataLen : 0;
+                    read_buf.clear();
+                    expectedSize = dataLen;
+                    readingPayload = true;
+                    if (dataLen == 0) finishResponse();
+                }
+            }
+        }
+        void pumpWrites() {
+            if (!sock || !connected_.load() || ioGeneration != generation_.load()) return;
+            while (sock->bytesToWrite() < kSocketWindow) {
+                if (currentWrite.frame.isEmpty()) {
+                    std::lock_guard<std::mutex> lock(pending_mu);
+                    auto &queue = controlWrites.empty() ? ordinaryWrites : controlWrites;
+                    if (queue.empty()) { if (!sock->bytesToWrite()) writeStarted = {}; return; }
+                    currentWrite = std::move(queue.front()); queue.pop_front();
+                    if (currentWrite.generation != ioGeneration || !pending.contains(currentWrite.id)) {
+                        auto &bytes = currentWrite.control ? controlQueuedBytes : ordinaryQueuedBytes;
+                        bytes = qMax(qint64(0), bytes - currentWrite.frame.size());
+                        currentWrite = {}; continue;
+                    }
+                    writeStarted = Clock::now();
+                }
+                const auto remaining = currentWrite.frame.size() - currentWrite.offset;
+                const qint64 amount = qMin(qMin(qint64(remaining), kSocketWindow - sock->bytesToWrite()), qint64(64 << 10));
+                const qint64 n = sock->write(currentWrite.frame.constData() + currentWrite.offset, amount);
+                if (n <= 0) { failConnection(); return; }
+                currentWrite.offset += n; // preserve remainder on a short write
+                if (currentWrite.offset == currentWrite.frame.size()) {
+                    std::lock_guard<std::mutex> lock(pending_mu);
+                    auto &bytes = currentWrite.control ? controlQueuedBytes : ordinaryQueuedBytes;
+                    bytes = qMax(qint64(0), bytes - currentWrite.frame.size());
+                    currentWrite = {};
+                    // Do not reset the stall deadline until the socket drains.
+                }
+            }
+        }
+        int enqueue(const QString &method, const std::string &req, std::shared_ptr<PendingCall> call,
+                    quint32 &id, quint64 &generation, quint64 expectedGeneration = 0) {
+            auto name = method.toUtf8();
+            const bool control = isControl(method);
+            if (name.isEmpty() || name.size() > 128 || req.size() > size_t(kRequestMax) ||
+                (control && req.size() > size_t(kControlMax))) return CallLimit;
+            const qint64 frameSize = 10 + name.size() + qint64(req.size());
+            std::lock_guard<std::mutex> lock(pending_mu);
+            if (!connected_.load() || (expectedGeneration && generation_.load() != expectedGeneration)) return CallNotConnected;
+            auto &count = control ? controlPending : ordinaryPending;
+            auto &bytes = control ? controlQueuedBytes : ordinaryQueuedBytes;
+            const auto budget = control ? kControlSlots * (kControlMax + 138) : kRequestBudget;
+            if (count >= (control ? kControlSlots : kOrdinarySlots) ||
+                (control ? controlWrites.size() : ordinaryWrites.size()) >= size_t(control ? kControlSlots : kOrdinarySlots) ||
+                frameSize > budget - bytes) return CallBusy;
+            // ID zero is unused; never reuse an ID within a connection, even if
+            // its response is late. Wrap requires reconnect rather than collision.
+            id = next_id.fetch_add(1);
+            if (id == 0) { connected_.store(false); return CallLimit; }
+            generation = generation_.load();
+            call->method = method; call->control = control;
+            QByteArray frame;
+            frame.reserve(frameSize);
+            QDataStream ds(&frame, QIODevice::WriteOnly);
+            ds.setByteOrder(QDataStream::LittleEndian);
+            ds << id << quint16(name.size());
+            ds.writeRawData(name.constData(), int(name.size()));
+            ds << quint32(req.size());
+            ds.writeRawData(req.data(), int(req.size()));
+            pending[id] = call; ++count; bytes += frame.size();
+            (control ? controlWrites : ordinaryWrites).push_back({id, generation, control, std::move(frame)});
+            return CallOK;
+        }
+        void fire(const QString &method, const std::string &req, bool handshake = false) {
+            auto call = std::make_shared<PendingCall>();
+            call->internal = true; call->handshake = handshake;
+            call->deadline = Clock::now() + std::chrono::milliseconds(kIOTimeoutMs);
+            quint32 id; quint64 generation;
+            if (enqueue(method, req, call, id, generation) == CallOK) pumpWrites();
+        }
+        void schedulePump() {
+            std::lock_guard<std::mutex> lock(pending_mu);
+            if (pumpScheduled) return;
+            pumpScheduled = true;
+            QMetaObject::invokeMethod(io_anchor, [this]() {
+                { std::lock_guard<std::mutex> lock(pending_mu); pumpScheduled = false; }
+                pumpCancellations();
+                pumpWrites();
+            }, Qt::QueuedConnection);
+        }
+        void sendCancel(quint32 id, const QString &method, quint64 generation) {
+            {
+                std::lock_guard<std::mutex> lock(pending_mu);
+                if (generation_.load() != generation || !cancelSupportedLocked(method)) return;
+                const auto found = std::find_if(cancellations.begin(), cancellations.end(),
+                    [id, generation](const auto &c) { return c.id == id && c.generation == generation; });
+                if (found == cancellations.end() && cancellations.size() < size_t(kOrdinarySlots))
+                    cancellations.push_back({id, method, generation});
+            }
+            // tick drains the bounded cancellation backlog as control slots free.
+            schedulePump();
+        }
+        void pumpCancellations() {
+            for (int i = 0; i < kControlSlots; ++i) {
+                Cancellation cancellation;
+                {
+                    std::lock_guard<std::mutex> lock(pending_mu);
+                    if (cancellations.empty()) return;
+                    cancellation = cancellations.front();
+                }
+                libcore::CancelRequestReq req;
+                req.req_id = cancellation.id;
+                auto call = std::make_shared<PendingCall>();
+                call->internal = true;
+                call->deadline = Clock::now() + std::chrono::milliseconds(kIOTimeoutMs);
+                quint32 id; quint64 generation;
+                const auto status = enqueue("CancelRequest", spb::pb::serialize<std::string>(req), call,
+                                            id, generation, cancellation.generation);
+                if (status == CallBusy) return;
+                std::lock_guard<std::mutex> lock(pending_mu);
+                if (!cancellations.empty() && cancellations.front().id == cancellation.id &&
+                    cancellations.front().generation == cancellation.generation) cancellations.pop_front();
+            }
+        }
+        void tick() {
+            const auto now = Clock::now();
+            const auto limit = std::chrono::milliseconds(kIOTimeoutMs);
+            if ((readStarted != Clock::time_point{} && now - readStarted >= limit) ||
+                (writeStarted != Clock::time_point{} && now - writeStarted >= limit)) {
+                failConnection(); return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(pending_mu);
+                QList<quint32> expired;
+                for (auto it = pending.cbegin(); it != pending.cend(); ++it)
+                    if (it.value()->internal && it.value()->deadline <= now) expired.append(it.key());
+                for (auto id : expired) erasePendingLocked(id);
+            }
+            pumpCancellations();
+            pumpWrites();
+        }
     public:
+        static constexpr int CallOK = 0;
+        static constexpr int CallNotConnected = -1919;
+        static constexpr int CallBusy = -1920;
+        static constexpr int CallLimit = -1921;
         LocalSocketChannel() {
             io_thread = new QThread;
             io_anchor = new QObject;
             io_anchor->moveToThread(io_thread);
             io_thread->start();
+            QMetaObject::invokeMethod(io_anchor, [this]() {
+                timer = new QTimer(io_anchor);
+                QObject::connect(timer, &QTimer::timeout, io_anchor, [this]() { tick(); });
+                timer->start(250);
+            }, Qt::QueuedConnection);
         }
-
         ~LocalSocketChannel() {
             wakeAllWithError();
-
             QMetaObject::invokeMethod(io_anchor, [this]() {
-                if (sock) {
-                    sock->close();
-                    delete sock;
-                    sock = nullptr;
-                }
+                clearReader();
+                if (sock) { sock->disconnect(io_anchor); sock->abort(); delete sock; sock = nullptr; }
+                timer->stop();
                 io_thread->quit();
             }, Qt::QueuedConnection);
-
             io_thread->wait();
             delete io_anchor;
             delete io_thread;
         }
-
-        // Must be called on the thread that currently owns `newSock`.
         void Reconnect(QLocalSocket *newSock) {
             wakeAllWithError();
-
+            const auto generation = generation_.fetch_add(1) + 1;
             newSock->setParent(nullptr);
             newSock->moveToThread(io_thread);
-
-            // Queued before any later write dispatch (FIFO), so writes issued after Reconnect always hit the new socket.
-            QMetaObject::invokeMethod(io_anchor, [this, newSock]() {
-                if (sock) {
-                    sock->disconnect(io_anchor);
-                    sock->close();
-                    sock->deleteLater();
-                }
-                sock = newSock;
-                read_buf.clear();
-                QObject::connect(sock, &QLocalSocket::readyRead, io_anchor,
-                    [this]() { onReadyRead(); });
-                QObject::connect(sock, &QLocalSocket::disconnected, io_anchor,
-                    [this]() { wakeAllWithError(); });
-                if (sock->bytesAvailable() > 0) onReadyRead();
-            }, Qt::QueuedConnection);
-
-            connected_.store(true, std::memory_order_release);
+            QMetaObject::invokeMethod(io_anchor, [this, newSock, generation]() {
+                if (generation != generation_.load()) { newSock->deleteLater(); return; }
+                if (sock) { sock->disconnect(io_anchor); sock->abort(); sock->deleteLater(); }
+                sock = newSock; ioGeneration = generation;
+                clearReader(); currentWrite = {}; writeStarted = {};
+                sock->setReadBufferSize(kSocketWindow);
+                QObject::connect(sock, &QLocalSocket::readyRead, io_anchor, [this]() { onReadyRead(); });
+                QObject::connect(sock, &QLocalSocket::bytesWritten, io_anchor, [this](qint64) {
+                    writeStarted = sock->bytesToWrite() ? Clock::now() : Clock::time_point{};
+                    pumpWrites();
+                });
+                QObject::connect(sock, &QLocalSocket::disconnected, io_anchor, [this]() { failConnection(); });
+                QObject::connect(sock, &QLocalSocket::errorOccurred, io_anchor,
+                                 [this](QLocalSocket::LocalSocketError) { failConnection(); });
+                connected_.store(sock->state() == QLocalSocket::ConnectedState);
+                if (connected_.load()) fire("QueryCapabilities", {}, true);
+                if (sock->bytesAvailable()) onReadyRead();
+                pumpWrites();
+            }, Qt::BlockingQueuedConnection);
         }
-
-        int Call(const QString &methodName, const std::string &req,
-                 std::vector<uint8_t> &rsp, int timeout_ms = 0) {
-            if (!connected_.load(std::memory_order_acquire)) return CallNotConnected;
-
-            const int ms = (timeout_ms > 0) ? timeout_ms : kIOTimeoutMs;
-
-            quint32 reqId = static_cast<quint32>(next_id.fetchAndAddOrdered(1));
-
-            auto methodBytes = methodName.toUtf8();
-            auto reqBytes    = QByteArray::fromStdString(req);
-
-            QByteArray frame;
-            {
-                QDataStream ds(&frame, QIODevice::WriteOnly);
-                ds.setByteOrder(QDataStream::LittleEndian);
-                ds << reqId;
-                ds << static_cast<quint16>(methodBytes.size());
-                ds.writeRawData(methodBytes.constData(), methodBytes.size());
-                ds << static_cast<quint32>(reqBytes.size());
-                ds.writeRawData(reqBytes.constData(), reqBytes.size());
-            }
-
-            // Must be registered before the write is dispatched, or the response can beat us to `pending`.
-            auto call = std::make_shared<PendingCall>();
+        libcore::RPCCapabilities Capabilities() const {
+            std::lock_guard<std::mutex> lock(pending_mu);
+            return capabilities;
+        }
+        void CancelPendingCalls() {
+            QList<std::pair<quint32, QString>> calls;
+            quint64 generation;
             {
                 std::lock_guard<std::mutex> lock(pending_mu);
-                pending[reqId] = call;
+                generation = generation_.load();
+                for (auto it = pending.cbegin(); it != pending.cend(); ++it)
+                    if (cancelSupportedLocked(it.value()->method)) calls.append({it.key(), it.value()->method});
             }
-
-            QMetaObject::invokeMethod(io_anchor, [this, frame]() {
-                if (sock) sock->write(frame);
-            }, Qt::QueuedConnection);
-
+            for (const auto &[id, method] : calls) sendCancel(id, method, generation);
+        }
+        int Call(const QString &methodName, const std::string &req, std::vector<uint8_t> &rsp, int timeout_ms = 0) {
+            rsp.clear();
+            auto call = std::make_shared<PendingCall>();
+            quint32 id; quint64 generation;
+            const int ms = timeout_ms > 0 ? timeout_ms : kIOTimeoutMs;
+            call->deadline = Clock::now() + std::chrono::milliseconds(ms);
+            const auto status = enqueue(methodName, req, call, id, generation);
+            if (status != CallOK) {
+                if (status == CallBusy) { const std::string busy = "rpc busy: client request budget"; rsp.assign(busy.begin(), busy.end()); }
+                return status;
+            }
+            schedulePump();
             std::unique_lock<std::mutex> lock(call->mu);
-            bool ok = call->cv.wait_for(lock,
-                std::chrono::milliseconds(ms),
-                [&call] { return call->done; });
-            lock.unlock();   // never hold call->mu while taking pending_mu
-
+            const bool ok = call->cv.wait_until(lock, call->deadline, [&call]() { return call->done; });
+            lock.unlock(); // pending_mu always precedes call->mu
             if (!ok) {
-                // Timed out — reclaim our slot unless processBuffer took it.
-                bool claimedByReader = false;
                 {
                     std::lock_guard<std::mutex> plock(pending_mu);
-                    if (pending.remove(reqId) == 0) claimedByReader = true;
+                    if (pending.value(id) == call) erasePendingLocked(id);
                 }
-                if (claimedByReader) {
-                    lock.lock();
-                    ok = call->cv.wait_for(lock,
-                        std::chrono::milliseconds(ms),
-                        [&call] { return call->done; });
-                    lock.unlock();
-                }
+                sendCancel(id, methodName, generation); // capability-gated, connection-local
             }
-
-            std::lock_guard<std::mutex> g(call->mu);
+            std::lock_guard<std::mutex> guard(call->mu);
+            rsp.assign(call->data.begin(), call->data.end());
+            (call->control ? controlResponseBytes : responseBytes).fetch_sub(call->responseReservation);
+            call->responseReservation = 0;
             if (!ok || call->status != 0) {
-                if (ok && call->status != 0) {
-                    MW_show_log("[Core error] " + QString::fromUtf8(call->data));
-                    // `rsp` is filled on failure too, so callers can inspect the core's error payload.
-                    rsp.assign(call->data.begin(), call->data.end());
-                }
+                if (!call->data.isEmpty()) MW_show_log("[Core error] " + QString::fromUtf8(call->data));
                 return 1;
             }
-            rsp.assign(call->data.begin(), call->data.end());
-            return 0;
+            return CallOK;
         }
     };
-
     namespace {
         // spb throws on malformed input; uncaught on a worker QThread that would terminate the process.
         template <typename T>
@@ -249,6 +453,9 @@ namespace API {
     void Client::Reconnect(QLocalSocket *socket) {
         channel->Reconnect(socket);
     }
+
+    libcore::RPCCapabilities Client::Capabilities() const { return channel->Capabilities(); }
+    void Client::CancelPendingCalls() { channel->CancelPendingCalls(); }
 
 #define NOT_OK      \
     *rpcOK = false; \
@@ -509,18 +716,29 @@ namespace API {
         }
     }
 
-    libcore::QueryConnectionsResp Client::QueryConnections() const
+    libcore::QueryConnectionsResp Client::QueryConnections(bool* rpcOK) const
     {
         libcore::EmptyReq request;
         libcore::QueryConnectionsResp reply;
         std::vector<uint8_t> resp;
         auto status = channel->Call("QueryConnections", spb::pb::serialize<std::string>(request), resp);
 
+        if (rpcOK) *rpcOK = false;
         if (status == LocalSocketChannel::CallOK && tryDeserialize(resp, reply)) {
+            if (rpcOK) *rpcOK = true;
             return reply;
         }
         if (status != LocalSocketChannel::CallOK) MW_show_log("Failed to query connections: IPC error");
         return {};
+    }
+
+    libcore::QueryConnectionsDeltaResponse Client::QueryConnectionsDelta(bool* rpcOK, const libcore::QueryConnectionsDeltaRequest& request) const {
+        *rpcOK = false;
+        libcore::QueryConnectionsDeltaResponse reply;
+        std::vector<uint8_t> resp;
+        const auto status = channel->Call("QueryConnectionsDelta", spb::pb::serialize<std::string>(request), resp);
+        if (status == LocalSocketChannel::CallOK && tryDeserialize(resp, reply)) *rpcOK = true;
+        return reply;
     }
 
     QString Client::CloseConnections(bool *rpcOK, const QStringList &ids, int *closedCount) const

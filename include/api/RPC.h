@@ -18,6 +18,12 @@ namespace API {
 
         void Reconnect(QLocalSocket *socket);
 
+        // Empty until the additive handshake succeeds; old cores safely keep
+        // existing StopTests/StopDiagnostics completion semantics.
+        [[nodiscard]] libcore::RPCCapabilities Capabilities() const;
+        // Cooperative cancellation of supported long calls only, never Start/DB writes.
+        void CancelPendingCalls();
+
         // QString returns is error string
 
         QString Start(bool *rpcOK, const libcore::LoadConfigReq &request);
@@ -39,7 +45,8 @@ namespace API {
 
         QString SetSystemDNS(bool *rpcOK, bool clear) const;
 
-        [[nodiscard]] libcore::QueryConnectionsResp QueryConnections() const;
+        [[nodiscard]] libcore::QueryConnectionsResp QueryConnections(bool* rpcOK = nullptr) const;
+        libcore::QueryConnectionsDeltaResponse QueryConnectionsDelta(bool* rpcOK, const libcore::QueryConnectionsDeltaRequest& request) const;
 
         // Ids already gone are a no-op; closedCount (optional) receives how many were actually live.
         QString CloseConnections(bool *rpcOK, const QStringList &ids, int *closedCount = nullptr) const;
@@ -87,7 +94,7 @@ namespace API {
 
         QString CancelVPNChallenge(bool *rpcOK, const QString &endpointTag, const QString &challengeId) const;
 
-        // Blocks for the whole capture window; a timeout does not stop the core, only StopDiagnostics does.
+        // Blocks for the capture window; timeout cooperatively cancels on capable cores.
         libcore::DiagnosticsResponse CaptureDiagnostics(bool *rpcOK, const libcore::DiagnosticsRequest &request, int timeoutMs);
 
         void StopDiagnostics(bool *rpcOK);

@@ -124,9 +124,9 @@ public:
 
     void update_traffic_graph(int proxyDl, int proxyUp, int directDl, int directUp);
 
-    void profile_start(int _id = -1);
+    void profile_start(int _id = -1, bool automaticRecovery = false, quint64 recoveryToken = 0);
 
-    void profile_stop(bool crash = false, bool block = false, bool manual = false);
+    void profile_stop(bool crash = false, bool block = false, bool manual = false, bool replacingProfile = false);
 
     int get_profile_to_start();
 

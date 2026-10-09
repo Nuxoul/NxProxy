@@ -106,7 +106,7 @@ namespace Configs {
 
     void DatabaseManager::RunDeferredMaintenance() {
         runOnNewThread([this] {
-            QThread::msleep(MAINTENANCE_DELAY_MS);
+            if (!waitForBackgroundWork(MAINTENANCE_DELAY_MS)) return;
             db.RunMaintenance();
             statsDb.RunMaintenance();
         });

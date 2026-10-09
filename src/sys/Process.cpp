@@ -5,6 +5,8 @@
 #include <QTimer>
 #include <QDir>
 #include <QApplication>
+#include <QThread>
+#include <QDebug>
 
 
 
@@ -30,18 +32,107 @@ namespace {
 
 namespace Configs_sys {
     CoreProcess::~CoreProcess() {
+        Kill();
+    }
+
+    void CoreProcess::SyncRestartPolicy(RestartToken token) {
+        if (m_policyGeneration == token) return;
+        m_restartTimer->stop();
+        m_restartPolicy.Reset();
+        m_policyGeneration = token;
+    }
+
+    void CoreProcess::CancelAutomaticRestart() {
+        const auto token = m_restartIntent.Cancel();
+        start_profile_when_core_is_up.store(-1);
+        // Invalidation above is immediate even while DS_cores is blocked in cleanup.
+        auto cancel = [this, token] {
+            if (m_restartIntent.Snapshot() == token) SyncRestartPolicy(token);
+        };
+        if (QThread::currentThread() == thread()) cancel();
+        else QMetaObject::invokeMethod(this, cancel, Qt::QueuedConnection);
+    }
+
+    CoreProcess::RestartToken CoreProcess::NoteProfileExpected(int profileId) {
+        const auto token = m_restartIntent.Expect(profileId);
+        auto sync = [this, token] {
+            if (m_restartIntent.IsCurrent(token)) SyncRestartPolicy(token);
+        };
+        if (QThread::currentThread() == thread()) sync();
+        else QMetaObject::invokeMethod(this, sync, Qt::QueuedConnection);
+        return token;
+    }
+
+    void CoreProcess::NoteProfileRunning(int profileId, RestartToken token) {
+        auto ready = [this, profileId, token] {
+            if (!m_restartIntent.IsCurrent(token) || CoreRestartIntent::Profile(token) != profileId
+                || state() != Running || Configs::dataManager->settingsRepo->prepare_exit) return;
+            SyncRestartPolicy(token);
+            m_restartPolicy.NoteRunning(m_restartClock.elapsed());
+        };
+        if (QThread::currentThread() == thread()) ready();
+        else QMetaObject::invokeMethod(this, ready, Qt::QueuedConnection);
+    }
+
+    void CoreProcess::NoteConfigurationRejected(int profileId, RestartToken token) {
+        if (CoreRestartIntent::Profile(token) != profileId || !m_restartIntent.CancelIfCurrent(token)) return;
+        start_profile_when_core_is_up.store(-1);
+        const auto cancelled = m_restartIntent.Snapshot();
+        auto sync = [this, cancelled] {
+            if (m_restartIntent.Snapshot() == cancelled) SyncRestartPolicy(cancelled);
+        };
+        if (QThread::currentThread() == thread()) sync();
+        else QMetaObject::invokeMethod(this, sync, Qt::QueuedConnection);
+    }
+
+    CoreProcess::RestartToken CoreProcess::SetProfileToRestore(int profileId) {
+        const auto token = NoteProfileExpected(profileId);
+        m_restoreGeneration.store(token);
+        start_profile_when_core_is_up.store(profileId);
+        return token;
+    }
+
+    int CoreProcess::ConsumeProfileToRestore() {
+        const auto token = m_restoreGeneration.exchange(0);
+        start_profile_when_core_is_up.store(-1);
+        return m_restartIntent.IsCurrent(token) ? CoreRestartIntent::Profile(token) : -1;
+    }
+
+    bool CoreProcess::StopProcess(int timeoutMs) {
+        m_suppressExit = true;
+        if (state() == NotRunning) return true;
+        kill();
+        if (waitForFinished(timeoutMs) || state() == NotRunning) return true;
+        LOG_ERROR("Core did not exit within the bounded kill wait; refusing a duplicate start.");
+        return false;
     }
 
     void CoreProcess::Kill() {
-        kill();
-        waitForFinished();
+        CancelAutomaticRestart();
+        StopProcess(1000);
     }
 
     CoreProcess::CoreProcess(const QString &core_path, const QString &socketName, bool debugMode)
         : m_socketName(socketName), m_debugMode(debugMode) {
         program = core_path;
+        m_restartClock.start();
+        m_restartTimer = new QTimer(this);
+        m_restartTimer->setSingleShot(true);
+        m_restartTimer->setTimerType(Qt::PreciseTimer);
+        connect(m_restartTimer, &QTimer::timeout, this, [this] {
+            const auto token = m_timerGeneration;
+            if (!m_restartIntent.IsCurrent(token) || Configs::dataManager->settingsRepo->prepare_exit) return;
+            const int profile = CoreRestartIntent::Profile(token);
+            const int current = Configs::dataManager->settingsRepo->started_id;
+            if (profile >= 0 && current >= 0 && current != profile) return;
+            if (state() != NotRunning || !m_restartPolicy.Consume(m_restartClock.elapsed())) return;
+            // Automatic attempts must not call public Restart(): that resets the budget.
+            m_restoreGeneration.store(token);
+            start_profile_when_core_is_up.store(profile);
+            if (m_restartIntent.IsCurrent(token)) Start();
+        });
 
-        connect(this, &QProcess::readyReadStandardOutput, this, [&]() {
+        connect(this, &QProcess::readyReadStandardOutput, this, [this]() {
             auto log = readAllStandardOutput();
             if (log.contains("Extra process exited unexpectedly"))
             {
@@ -52,60 +143,68 @@ namespace Configs_sys {
             if (logCounter.fetchAndAddRelaxed(log.count("\n")) > Configs::dataManager->settingsRepo->max_log_line) return;
             MW_show_log(log);
         });
-        connect(this, &QProcess::readyReadStandardError, this, [&]() {
+        connect(this, &QProcess::readyReadStandardError, this, [this]() {
             auto log = readAllStandardError().trimmed();
             MW_show_log(log);
         });
-        connect(this, &QProcess::errorOccurred, this, [&](ProcessError error) {
+        connect(this, &QProcess::errorOccurred, this, [this](ProcessError error) {
+            const auto message = QString("core process error %1: %2").arg(static_cast<int>(error)).arg(errorString());
+            Logging::Write(m_suppressExit || Configs::dataManager->settingsRepo->prepare_exit
+                               ? Logging::Level::Info : Logging::Level::Error, message);
             if (error == FailedToStart) {
-                failed_to_start = true;
-                MW_show_log("start core error occurred: " + errorString() + "\n");
+                HandleUnexpectedExit(CoreRestartPolicy::Failure::LaunchFailed,
+                                     QString("start core error occurred: %1").arg(errorString()));
             }
-            LOG_ERROR(QString("core process error %1: %2").arg(static_cast<int>(error)).arg(errorString()));
         });
-        connect(this, &QProcess::finished, this, [&](int exitCode, ExitStatus exitStatus) {
+        connect(this, &QProcess::finished, this, [this](int exitCode, ExitStatus exitStatus) {
             const bool crashed = exitStatus == CrashExit || exitCode != 0;
-            Logging::Write(crashed ? Logging::Level::Error : Logging::Level::Info,
-                           QString("core process exited: code=%1 status=%2%3")
-                               .arg(exitCode)
-                               .arg(exitStatus == CrashExit ? "crash" : "normal")
-                               .arg(Configs::dataManager->settingsRepo->prepare_exit ? " (during shutdown)" : ""));
+            const QString reason = QString("core process exited: code=%1 status=%2%3")
+                                       .arg(exitCode)
+                                       .arg(exitStatus == CrashExit ? "crash" : "normal")
+                                       .arg(Configs::dataManager->settingsRepo->prepare_exit ? " (during shutdown)" : "");
+            Logging::Write(crashed && !m_suppressExit && !Configs::dataManager->settingsRepo->prepare_exit
+                               ? Logging::Level::Error : Logging::Level::Info, reason);
+            HandleUnexpectedExit(CoreRestartPolicy::Failure::UnexpectedExit, reason);
         });
-        connect(this, &QProcess::stateChanged, this, [&](ProcessState state) {
+        connect(this, &QProcess::stateChanged, this, [this](ProcessState state) {
             if (state == NotRunning) {
                 Configs::dataManager->settingsRepo->core_running = false;
-                qDebug() << "Core stated changed to not running";
-            }
-
-            if (!Configs::dataManager->settingsRepo->prepare_exit && state == NotRunning) {
-                if (failed_to_start) return;
-                if (restarting) return;
-
-                MW_show_log("[Fatal] " + QObject::tr("Core exited, cleaning up..."));
-
-                GetMainWindow()->profile_stop(true, true);
-
-                if (coreRestartTimer.isValid()) {
-                    if (coreRestartTimer.restart() < 10 * 1000) {
-                        coreRestartTimer = QElapsedTimer();
-                        MW_show_log("[ERROR] " + QObject::tr("Core exits too frequently, stop automatic restart this profile."));
-                        return;
-                    }
-                } else {
-                    coreRestartTimer.start();
-                }
-
-                start_profile_when_core_is_up = Configs::dataManager->settingsRepo->started_id;
-                MW_show_log("[Warn] " + QObject::tr("Restarting the core ..."));
-                setTimeout([=,this] { Restart(); }, this, 200);
+                qDebug() << "Core state changed to not running";
             }
         });
     }
 
-    void CoreProcess::Start() {
-        if (started) return;
-        started = true;
+    void CoreProcess::HandleUnexpectedExit(CoreRestartPolicy::Failure failure, const QString &reason) {
+        if (m_suppressExit || Configs::dataManager->settingsRepo->prepare_exit) return;
+        auto token = m_restartIntent.Snapshot();
+        // Compatibility fallback for a running configuration whose caller has not yet
+        // published intent. Capture BEFORE profile_stop; never resurrect cancelled intent.
+        if (CoreRestartIntent::Enabled(token) && CoreRestartIntent::Profile(token) < 0
+            && Configs::dataManager->settingsRepo->started_id >= 0)
+            token = m_restartIntent.ExpectIfCurrent(token, Configs::dataManager->settingsRepo->started_id);
+        SyncRestartPolicy(token);
+        const auto decision = m_restartIntent.IsCurrent(token)
+            ? m_restartPolicy.OnExit(m_restartClock.elapsed(), failure)
+            : CoreRestartPolicy::Decision{CoreRestartPolicy::Action::Disabled};
+        if (decision.action == CoreRestartPolicy::Action::AlreadyPending) return;
 
+        MW_show_log("[Fatal] " + QObject::tr("Core exited, cleaning up...") + " " + reason);
+        GetMainWindow()->profile_stop(true, true, false);
+        if (!m_restartIntent.IsCurrent(token) || Configs::dataManager->settingsRepo->prepare_exit) return;
+        if (decision.action != CoreRestartPolicy::Action::Retry) {
+            start_profile_when_core_is_up.store(-1);
+            MW_show_log("[ERROR] " + QObject::tr("Automatic core recovery stopped (retry budget exhausted or permanent startup failure). Last exit: %1").arg(reason));
+            return;
+        }
+        m_timerGeneration = token;
+        MW_show_log("[Warn] " + QObject::tr("Restarting the core in %1 ms (attempt %2/%3).")
+                                  .arg(decision.delayMs).arg(decision.attempt).arg(CoreRestartPolicy::RetryBudget));
+        m_restartTimer->start(decision.delayMs);
+    }
+
+    void CoreProcess::Start() {
+        if (state() != NotRunning || Configs::dataManager->settingsRepo->prepare_exit) return;
+        m_suppressExit = false;
         auto env = QProcessEnvironment::systemEnvironment();
         env.insert("THRONE_CORE_SOCKET", m_socketName);
         // Turns an unrecovered Go panic into a real abort, so all goroutine stacks are dumped and WER captures the core too.
@@ -114,16 +213,23 @@ namespace Configs_sys {
         // Points Xray's asset loader at our writable config dir, so a geoip.dat/geosite.dat downloaded later is found with no core restart.
         env.insert("XRAY_LOCATION_ASSET", Configs::GetBasePath());
         setProcessEnvironment(env);
-        start(program, {});
+        start(program, arguments);
     }
 
     void CoreProcess::Restart() {
-        restarting = true;
-        kill();
-        waitForFinished(500);
-        started = false;
+        // Preserve only an explicit requested handoff, not a cancelled crash recovery.
+        const int requested = start_profile_when_core_is_up.exchange(-1);
+        const auto cancelled = m_restartIntent.Cancel();
+        start_profile_when_core_is_up.store(-1);
+        SyncRestartPolicy(cancelled);
+        if (!StopProcess(500) || Configs::dataManager->settingsRepo->prepare_exit) return;
+        // A UI stop/switch can arrive while waitForFinished pumps process events.
+        const auto token = m_restartIntent.ExpectIfCurrent(cancelled, requested);
+        if (!m_restartIntent.IsCurrent(token)) return;
+        SyncRestartPolicy(token);
+        m_restoreGeneration.store(token);
+        start_profile_when_core_is_up.store(requested);
         Start();
-        restarting = false;
     }
 
 } // namespace Configs_sys

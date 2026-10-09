@@ -4,6 +4,8 @@ package libcore;
 option go_package = "./;gen";
 
 service LibcoreService {
+  rpc QueryCapabilities(EmptyReq) returns (RPCCapabilities);
+  rpc CancelRequest(CancelRequestReq) returns (CancelRequestResp);
   rpc Start(LoadConfigReq) returns (ErrorResp);
   rpc Stop(EmptyReq) returns (ErrorResp);
   rpc CheckConfig(LoadConfigReq) returns (ErrorResp);
@@ -12,6 +14,7 @@ service LibcoreService {
   rpc QueryURLTest(EmptyReq) returns (QueryURLTestResponse);
   rpc QueryStats(EmptyReq) returns (QueryStatsResp);
   rpc QueryConnections(EmptyReq) returns (QueryConnectionsResp);
+  rpc QueryConnectionsDelta(QueryConnectionsDeltaRequest) returns (QueryConnectionsDeltaResponse);
   rpc CloseConnections(CloseConnectionsRequest) returns (CloseConnectionsResponse);
   //
   rpc SetSystemDNS(SetSystemDNSRequest) returns (EmptyResp);
@@ -212,6 +215,27 @@ message QueryStatsResp{
 message QueryConnectionsResp {
   repeated ConnectionMetaData active = 1;
   repeated ConnectionMetaData closed = 2;
+}
+
+// Absolute counters, non-draining closed ring, and a bounded per-client cursor.
+message QueryConnectionsDeltaRequest {
+  optional string client_id = 1 [default = ""];
+  optional uint64 epoch = 2 [default = 0];
+  optional uint64 cursor = 3 [default = 0];
+}
+message ConnectionCounterDelta {
+  optional string id = 1 [default = ""];
+  optional int64 upload = 2 [default = 0];
+  optional int64 download = 3 [default = 0];
+  optional int64 closed_at = 4 [default = 0];
+}
+message QueryConnectionsDeltaResponse {
+  optional bool full = 1 [default = false];
+  optional uint64 epoch = 2 [default = 0];
+  optional uint64 cursor = 3 [default = 0];
+  repeated ConnectionMetaData added = 4;
+  repeated ConnectionCounterDelta changed = 5;
+  repeated string removed = 6;
 }
 
 message ConnectionMetaData {
@@ -469,4 +493,25 @@ message DiagnosticsResponse {
 message UpdateRuleSetsResponse {
   optional int32 updated = 1 [default = 0];
   optional string error = 2 [default = ""];
+}
+
+// Additive capability handshake. Unknown method on old cores means fallback:
+// retain StopTest/StopDiagnostics and never send CancelRequest speculatively.
+message RPCCapabilities {
+  optional uint32 protocol_version = 1 [default = 0];
+  optional bool cancel_request = 2 [default = false];
+  optional uint32 max_method_bytes = 3 [default = 0];
+  optional uint32 max_request_bytes = 4 [default = 0];
+  optional uint32 max_response_bytes = 5 [default = 0];
+  optional uint32 ordinary_slots = 6 [default = 0];
+  optional uint32 control_slots = 7 [default = 0];
+  repeated string cancelable_methods = 8;
+  optional bool connection_delta = 9 [default = false];
+}
+message CancelRequestReq {
+  optional uint32 req_id = 1 [default = 0];
+}
+message CancelRequestResp {
+  // false = already completed, unknown ID or atomic-completion method.
+  optional bool accepted = 1 [default = false];
 }

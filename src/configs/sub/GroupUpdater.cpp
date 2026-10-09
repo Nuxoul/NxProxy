@@ -359,6 +359,7 @@ namespace Subscription {
     }
 
     void GroupUpdater::RefreshGroup(int gid, const Finish &finish, bool showDiff) {
+        if (Configs::dataManager->settingsRepo->prepare_exit) return;
         QMutexLocker locker(&mutex);
         if (pending.contains(gid)) {
             locker.unlock();
@@ -375,6 +376,7 @@ namespace Subscription {
     }
 
     void GroupUpdater::RefreshAll(bool onlyAllowed) {
+        if (Configs::dataManager->settingsRepo->prepare_exit) return;
         QMutexLocker locker(&mutex);
         if (pendingBatch > 0) {
             locker.unlock();
@@ -442,6 +444,10 @@ namespace Subscription {
     }
 
     void GroupUpdater::enqueue(Job job) {
+        if (Configs::dataManager->settingsRepo->prepare_exit) {
+            MW_show_log(QObject::tr("Subscription task was rejected during shutdown."));
+            return;
+        }
         QMutexLocker locker(&mutex);
         enqueueLocked(std::move(job));
     }
@@ -465,7 +471,7 @@ namespace Subscription {
                 job = queue.takeFirst();
             }
             try {
-                job.run();
+                if (!Configs::dataManager->settingsRepo->prepare_exit) job.run();
             } catch (const std::exception &ex) {
                 MW_show_log(QString("Subscription task failed: %1").arg(ex.what()));
             } catch (...) {

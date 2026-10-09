@@ -264,6 +264,7 @@ func vpnEndpointTags(box *boxbox.Box) []string {
 
 func collectVPNStatus(ctx context.Context, box *boxbox.Box, tags []string, timeout time.Duration) []*gen.VPNEndpointStatus {
 	out := make([]*gen.VPNEndpointStatus, len(tags))
+	slots := make(chan struct{}, 16)
 	var wg sync.WaitGroup
 	for idx, tag := range tags {
 		endpoint, err := resolveVPNEndpoint(box, tag)
@@ -271,9 +272,16 @@ func collectVPNStatus(ctx context.Context, box *boxbox.Box, tags []string, timeo
 			out[idx] = &gen.VPNEndpointStatus{Tag: To(tag), Error: To(err.Error()), Connected: To(false)}
 			continue
 		}
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+			out[idx] = endpoint.snapshot()
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() { <-slots }()
 			out[idx] = awaitVPNStatus(ctx, endpoint, timeout)
 		}()
 	}

@@ -144,7 +144,13 @@ func runBatch[T any](ctx context.Context, i Box, outboundTags []string, maxConcu
 		}
 
 		time.Sleep(2 * time.Millisecond) // don't spawn goroutines too quickly
-		limiter <- struct{}{}
+		select {
+		case limiter <- struct{}{}:
+		case <-ctx.Done():
+			store(tag, probe.fail(tag, ErrTestAborted))
+			wg.Done()
+			continue
+		}
 		go func(t string) {
 			defer wg.Done()
 			defer func() { <-limiter }()

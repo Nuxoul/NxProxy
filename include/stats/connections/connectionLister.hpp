@@ -6,6 +6,10 @@
 #include <QSet>
 #include <QPair>
 #include <atomic>
+#ifndef Q_MOC_RUN
+#include "ConnectionSnapshot.hpp"
+#include "ConnectionAccounting.hpp"
+#endif
 
 namespace Stats
 {
@@ -34,6 +38,7 @@ namespace Stats
     // Maps generated core outbound tags to user-facing strategy group/node labels.
     void SetOutboundDisplayNames(const QMap<QString, QString> &tagToDisplay);
     QString OutboundDisplayName(const QString &tag);
+    QString ConnectionOutboundDisplayName(const QString& outbound, const QStringList& chain);
 
     class ConnectionMetadata
     {
@@ -43,7 +48,8 @@ namespace Stats
         long long upload;
         long long download;
         QString outbound;
-        QString outboundDisplay; // resolved strategy group/node label; falls back to outbound when unknown
+        QString outboundDisplay; // resolved actual strategy/node chain, not current group selection
+        QStringList chain;
         QString network;
         QString dest;
         QString protocol;
@@ -71,6 +77,7 @@ namespace Stats
         void SetInView(bool inView);
 
         void stopLoop();
+        void InvalidateSnapshot() { snapshotInvalidated_.store(true); }
 
         void setSort(ConnectionSort newSort);
 
@@ -95,6 +102,17 @@ namespace Stats
             qint64 downSpeed = 0;
         };
         QHash<QString, SpeedSample> speedSamples_;
+        QHash<QString, ConnectionMetadata> metadataCache_;
+#ifndef Q_MOC_RUN
+        ConnectionSnapshot connectionSnapshot_;
+        ConnectionAccounting accounting_;
+#endif
+        QString deltaClientID_;
+        std::atomic<bool> snapshotInvalidated_{false};
+        void publishLatest(QList<ConnectionMetadata> rows);
+        QMutex uiSnapshotMu_;
+        QList<ConnectionMetadata> latestRows_;
+        bool uiUpdateQueued_ = false;
 
         QMutex mu;
 
@@ -110,9 +128,7 @@ namespace Stats
 
         bool asc = false;
 
-        // The core's closed ring is non-draining, so closed ids must be deduped; both are rebuilt each poll.
-        QHash<QString, QPair<qint64, qint64>> lastBytes_;
-        QSet<QString> accountedClosed_;
+
     };
 
     extern ConnectionLister* connection_lister;

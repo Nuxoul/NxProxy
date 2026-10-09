@@ -15,6 +15,7 @@
 #include <QJsonDocument>
 #include <QFile>
 #include <QRegularExpression>
+#include <QScopeGuard>
 
 #include "include/configs/generate.h"
 #include "include/configs/common/xrayStreamSetting.h"
@@ -35,6 +36,7 @@ using namespace API;
 
 void MainWindow::setup_rpc(QLocalSocket *socket) {
     defaultClient->Reconnect(socket);
+    Stats::connection_lister->InvalidateSnapshot();
 
     if (!rpc_started) {
         rpc_started = true;
@@ -169,7 +171,7 @@ bool MainWindow::handleXrayGeoAssetError(const QString& error, const QString& co
     return true;
 }
 
-void MainWindow::profile_start(int _id) {
+void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recoveryToken) {
     if (Configs::dataManager->settingsRepo->prepare_exit) return;
 #ifdef Q_OS_LINUX
     if (Configs::dataManager->settingsRepo->enable_dns_server && Configs::dataManager->settingsRepo->dns_server_listen_port <= 1024) {
@@ -208,6 +210,36 @@ void MainWindow::profile_start(int _id) {
     const auto group = Configs::dataManager->groupsRepo->GetGroup(ent->gid);
     if (group == nullptr || group->archive) return;
 
+    // Reserve the launch slot before changing intent. A rejected duplicate user
+    // action must not cancel the request already using this slot.
+    if (!mu_starting.tryLock()) {
+        MessageBoxWarning(software_name, tr("Another profile is starting..."));
+        return;
+    }
+    bool launchSlotTransferred = false;
+    const auto launchSlot = qScopeGuard([this, &launchSlotTransferred] {
+        if (!launchSlotTransferred) mu_starting.unlock();
+    });
+    // Publish intent before ranking/building. Automatic callbacks carry their original
+    // token and cannot re-enable a profile after a newer stop or user start.
+    Configs_sys::CoreProcess::RestartToken restartToken = 0;
+    {
+        QMutexLocker lock(&coreProcessMutex);
+        if (!core_process) return;
+        if (automaticRecovery) {
+            if (!core_process->IsRestartCurrent(recoveryToken)) return;
+            restartToken = recoveryToken;
+        } else {
+            core_process->CancelAutomaticRestart();
+            restartToken = core_process->NoteProfileExpected(ent->id);
+        }
+    }
+    auto restartCurrent = [this, restartToken] {
+        QMutexLocker lock(&coreProcessMutex);
+        return !Configs::dataManager->settingsRepo->prepare_exit && core_process
+            && core_process->IsRestartCurrent(restartToken);
+    };
+
     // Ranking must run before the config is built and it blocks, so hop off the UI thread.
     if (ent->type == "autoselector" && !auto_selector_ranked) {
         const auto plan = Configs::PlanAutoSelector(ent);
@@ -218,7 +250,7 @@ void MainWindow::profile_start(int _id) {
                 rank_auto_selector(ent);
                 runOnUiThread([=, this] {
                     auto_selector_ranked = false;
-                    profile_start(startId);
+                    if (restartCurrent()) profile_start(startId, true, restartToken);
                 });
             });
             return;
@@ -226,12 +258,15 @@ void MainWindow::profile_start(int _id) {
     }
     auto_selector_ranked = false;
 
-    const auto result = Configs::BuildSingBoxConfig(ent);
+    const auto result = Configs::BuildSingBoxConfig(ent, Configs::BuildConfigOptions{true});
     if (!result->error.isEmpty()) {
+        { QMutexLocker lock(&coreProcessMutex);
+          if (core_process) core_process->NoteConfigurationRejected(ent->id, restartToken); }
         MessageBoxWarning(tr("BuildConfig return error"), result->error);
         return;
     }
     auto profile_start_stage2 = [=, this](const QPointer<RestartPrompt> &restartPrompt) {
+        if (!restartCurrent()) return false;
         libcore::LoadConfigReq req;
         req.core_config = QJsonObject2QString(result->coreConfig, true).toStdString();
         req.tun_ipv4_cidr = result->tunIPv4CIDR.toStdString();
@@ -261,10 +296,16 @@ void MainWindow::profile_start(int _id) {
         const QString error = defaultClient->Start(&rpcOK, req);
         // Queued ahead of every dialog below, so none of them can be shown over the prompt.
         runOnUiThread([restartPrompt] { if (restartPrompt) restartPrompt->dismiss(); });
-        if (!rpcOK) {
+        if (!rpcOK) return false;
+        if (!restartCurrent()) {
+            // Start is atomic and cannot be forcibly cancelled. A stop during that
+            // call may have found no published `running` profile, so unwind here.
+            if (error.isEmpty()) { bool stopped = false; defaultClient->Stop(&stopped); }
             return false;
         }
         if (!error.isEmpty()) {
+            { QMutexLocker lock(&coreProcessMutex);
+              if (core_process) core_process->NoteConfigurationRejected(ent->id, restartToken); }
             if (handleXrayGeoAssetError(error, ent->outbound->DisplayTypeAndName())) {
                 return false;
             }
@@ -304,6 +345,9 @@ void MainWindow::profile_start(int _id) {
             runOnUiThread([=, this] { MessageBoxWarning("LoadConfig return error", error); });
             return false;
         }
+        { QMutexLocker lock(&coreProcessMutex);
+          if (!core_process || !core_process->IsRestartCurrent(restartToken)) return false;
+          core_process->NoteProfileRunning(ent->id, restartToken); }
         Stats::trafficLooper->SetChainGroups(result->chainGroups);
         Stats::trafficLooper->loop_enabled = true;
         Stats::connection_lister->suspend = false;
@@ -354,6 +398,10 @@ void MainWindow::profile_start(int _id) {
                 });
             }
         }
+        if (!restartCurrent()) {
+            bool stopped = false; defaultClient->Stop(&stopped);
+            return false;
+        }
         Configs::SetRunningProfiles(result->involvedProfiles);
         running = ent;
         if (Configs::dataManager->settingsRepo->spmode_system_proxy) set_system_proxy(true);
@@ -361,6 +409,7 @@ void MainWindow::profile_start(int _id) {
         const bool exitIsEndpoint = vpn_exit_endpoint(ent) != nullptr;
 
         runOnUiThread([=, this] {
+            if (!restartCurrent()) return;
             clearRestartNeeded();
             start_vpn_challenge_poll();
             refresh_status();
@@ -387,13 +436,8 @@ void MainWindow::profile_start(int _id) {
         return true;
     };
 
-    if (!mu_starting.tryLock()) {
-        MessageBoxWarning(software_name, tr("Another profile is starting..."));
-        return;
-    }
     if (!mu_stopping.tryLock()) {
         MessageBoxWarning(software_name, tr("Another profile is stopping..."));
-        mu_starting.unlock();
         return;
     }
     mu_stopping.unlock();
@@ -402,11 +446,11 @@ void MainWindow::profile_start(int _id) {
         runOnThread(
             [=, this] {
                 MW_show_log(tr("Try to start the config, but the core has not listened to the RPC port, so restart it..."));
-                core_process->start_profile_when_core_is_up = ent->id;
+                if (!restartCurrent()) return;
+                core_process->SetProfileToRestore(ent->id);
                 core_process->Restart();
             },
             DS_cores);
-        mu_starting.unlock();
         return;
     }
 
@@ -418,9 +462,15 @@ void MainWindow::profile_start(int _id) {
         refresh_startstop_button();
     });
 
+    launchSlotTransferred = true;
     runOnNewThread([=, this] {
+        if (!restartCurrent()) {
+            mu_starting.unlock();
+            runOnUiThread([=, this] { if (restartPrompt) restartPrompt->dismiss(); m_profileConnecting = false; refresh_startstop_button(); });
+            return;
+        }
         if (running != nullptr) {
-            profile_stop(false, false, true);
+            profile_stop(false, false, true, true);
             mu_stopping.lock();
             mu_stopping.unlock();
         }
@@ -437,7 +487,11 @@ void MainWindow::profile_start(int _id) {
     });
 }
 
-void MainWindow::profile_stop(bool crash, bool block, bool manual) {
+void MainWindow::profile_stop(bool crash, bool block, bool manual, bool replacingProfile) {
+    if (!crash && !replacingProfile) {
+        QMutexLocker lock(&coreProcessMutex);
+        if (core_process) core_process->CancelAutomaticRestart();
+    }
     if (running == nullptr) {
         return;
     }
@@ -479,7 +533,7 @@ void MainWindow::profile_stop(bool crash, bool block, bool manual) {
     Stats::autoSelectorMonitor->Clear();
     runOnUiThread([this] { refresh_auto_selector_view(); });
 
-    runOnNewThread([=, this] {
+    auto stopWork = [=, this] {
         Stats::trafficLooper->loop_enabled = false;
         Stats::connection_lister->suspend = true;
         Stats::trafficLooper->loop_mutex.lock();
@@ -523,7 +577,9 @@ void MainWindow::profile_stop(bool crash, bool block, bool manual) {
 
             mu_stopping.unlock();
         }, true);
-    }, block);
+    };
+    if (block && Configs::dataManager->settingsRepo->prepare_exit) stopWork();
+    else runOnNewThread(stopWork, block);
 }
 
 void MainWindow::start_vpn_challenge_poll() {

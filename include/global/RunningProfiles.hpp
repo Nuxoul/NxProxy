@@ -16,6 +16,8 @@ namespace Configs
 
     // Strategy group profile id -> member profile id -> the member's outbound tag in the live core.
     // Recorded at start so a click can repick a live group; empty once the profile stops.
+    // Tags may be shared across groups: resolve by (selectorID, memberID), never
+    // reverse-map a member tag to one owning selector or use it as a display label.
     void SetSelectorMemberTags(const QMap<int, QMap<int, QString>> &tags);
 
     void ClearSelectorMemberTags();
