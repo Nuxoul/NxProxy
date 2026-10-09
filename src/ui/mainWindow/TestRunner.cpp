@@ -1,4 +1,5 @@
 #include "include/ui/mainWindow/TestRunner.h"
+#include "include/ui/mainWindow/UrlTestCleanup.hpp"
 
 #include "include/ui/mainwindow.h"
 #include <QSet>
@@ -170,10 +171,12 @@ void TestRunner::applyIpResult(const std::shared_ptr<Configs::Profile>& ent, con
     Configs::dataManager->profilesRepo->Save(ent);
 }
 
-void TestRunner::runUrlProbe(const Target& target) {
+TestRunner::UrlProbeOutcome TestRunner::runUrlProbe(const Target& target) {
+    UrlProbeOutcome outcome;
     if (stopRequested_.load()) {
         MW_show_log(MainWindow::tr("Profile test aborted"));
-        return;
+        outcome.aborted = true;
+        return outcome;
     }
 
     libcore::TestReq req;
@@ -209,7 +212,7 @@ void TestRunner::runUrlProbe(const Target& target) {
                 if (entid == -1) continue;
                 auto ent = Configs::dataManager->profilesRepo->GetProfile(entid);
                 if (ent == nullptr) continue;
-                applyUrlResult(ent, res);
+                // Progress is advisory; only the final response has VPN verdicts and may store latency.
                 updated << entid;
             }
             if (updated.isEmpty()) return;
@@ -222,7 +225,8 @@ void TestRunner::runUrlProbe(const Target& target) {
 
     if (!rpcOK || result.results.empty()) {
         if (!rpcOK) mw_->handleXrayGeoAssetError(coreError, contextName(target.entID));
-        return;
+        outcome.incomplete = true;
+        return outcome;
     }
 
     QHash<QString, bool> vpnConnected;
@@ -242,7 +246,12 @@ void TestRunner::runUrlProbe(const Target& target) {
             continue;
         }
         applyUrlResult(ent, res, &vpnConnected);
+        const auto error = QString::fromStdString(res.error.value());
+        if (isTestAborted(error)) outcome.aborted = true;
+        else if (!error.isEmpty() && ent->latency < 0 && ent->latency != Configs::kLatencyConnectOnly)
+            outcome.failedIDs.append(entid);
     }
+    return outcome;
 }
 
 void TestRunner::runIpProbe(const Target& target) {
@@ -341,31 +350,42 @@ void TestRunner::runLatencyGroup(LatencyKind kind, const QList<int>& requestedID
         finish();
         return;
     }
+    stopRequested_.store(false);
     sessionGen_.fetch_add(1);
 
     runOnNewThread([this, profileIDs, panelKind, isUrl, finish]() {
-        stopRequested_.store(false);
         mw_->dataViewHtmlGenerator_.seedLatencyTest(panelKind, profileIDs.size());
         mw_->UpdateDataView(true);
 
-        auto runBatch = [this, isUrl](const QList<std::shared_ptr<Configs::Profile>>& profileSlice, const QList<int>& ids) {
+        // Only final, successful RPC responses may qualify an ID for automatic cleanup.
+        QMutex failuresMutex;
+        QSet<int> failedIDs;
+        std::atomic<bool> aborted = false;
+        std::atomic<bool> incomplete = false;
+        auto runBatch = [this, isUrl, &failuresMutex, &failedIDs, &aborted, &incomplete](const QList<std::shared_ptr<Configs::Profile>>& profileSlice, const QList<int>& ids) {
             // Per batch, not per probe: a batch's probes drain each other's results, and tags restart each batch.
             sessionGen_.fetch_add(1);
             auto buildObject = Configs::BuildTestConfig(profileSlice);
             if (!buildObject->error.isEmpty()) {
                 MW_show_log(MainWindow::tr("Failed to build test config for batch: ") + buildObject->error);
+                incomplete.store(true);
                 return;
             }
 
             const int testCount = buildObject->fullConfigs.size() + (buildObject->outboundTags.empty() ? 0 : 1);
-            if (testCount == 0) return;
+            if (testCount == 0) { incomplete.store(true); return; }
 
             QSemaphore batchDone;
-            const auto probe = [this, isUrl, &batchDone](const Target& target) {
-                mw_->parallelCoreCallPool->start([this, isUrl, target, &batchDone] {
+            const auto probe = [this, isUrl, &batchDone, &failuresMutex, &failedIDs, &aborted, &incomplete](const Target& target) {
+                mw_->parallelCoreCallPool->start([this, isUrl, target, &batchDone, &failuresMutex, &failedIDs, &aborted, &incomplete] {
                     const QSemaphoreReleaser releaser(batchDone);
-                    if (isUrl) runUrlProbe(target);
-                    else runIpProbe(target);
+                    if (isUrl) {
+                        const auto outcome = runUrlProbe(target);
+                        if (outcome.aborted) aborted.store(true);
+                        if (outcome.incomplete) incomplete.store(true);
+                        QMutexLocker locker(&failuresMutex);
+                        for (const int id : outcome.failedIDs) failedIDs.insert(id);
+                    } else runIpProbe(target);
                 });
             };
 
@@ -394,28 +414,29 @@ void TestRunner::runLatencyGroup(LatencyKind kind, const QList<int>& requestedID
             });
         };
 
-        std::shared_ptr<Configs::Group> currentGroup;
         for (int i = 0; i < profileIDs.length(); i += kTestBatchSize) {
             if (stopRequested_.load()) break;
             const auto profileIDsSlice = profileIDs.mid(i, kTestBatchSize);
             auto profiles = Configs::dataManager->profilesRepo->GetProfileBatch(profileIDsSlice);
-            if (isUrl && !currentGroup && !profiles.isEmpty()) {
-                currentGroup = Configs::dataManager->groupsRepo->GetGroup(profiles[0]->gid);
-            }
             runBatch(profiles, profileIDsSlice);
         }
 
         mw_->dataViewHtmlGenerator_.clearTestSections();
         mw_->UpdateDataView(true);
-        session_.unlock();
-        finish();
-
-        if (currentGroup != nullptr && currentGroup->auto_clear_unavailable) {
-            MW_show_log("URL test finished, clearing unavailable profiles...");
-            runOnUiThread([=, this] {
-               mw_->clearUnavailableProfiles(false, profileIDs);
+        const auto cleanupGeneration = sessionGen_.load();
+        const bool mayClean = UrlTestCleanup::allowed(isUrl, stopRequested_.load(), aborted.load() || incomplete.load(), true);
+        const QList<int> failed(failedIDs.cbegin(), failedIDs.cend());
+        if (mayClean && !failed.isEmpty()) {
+            runOnUiThread([this, failed, cleanupGeneration] {
+                // A cancel or a newer sweep can arrive while this UI callback is queued.
+                if (!UrlTestCleanup::allowed(true, stopRequested_.load(), false, !staleGen(cleanupGeneration))) return;
+                auto eligible = UrlTestCleanup::eligibleFailures(failed);
+                // Empty means no work, never "delete everything in the current group".
+                if (!eligible.isEmpty()) mw_->clearUnavailableProfiles(false, eligible);
             });
         }
+        session_.unlock();
+        finish();
         MW_show_log(isUrl ? MainWindow::tr("URL test finished!") : MainWindow::tr("IP test finished!"));
     });
 }

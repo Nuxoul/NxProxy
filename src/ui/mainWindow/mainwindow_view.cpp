@@ -491,7 +491,16 @@ void MainWindow::refresh_selector_panel()
 {
     if (ui->selectorGroupList == nullptr || profilesFilterModel == nullptr || profilesTableModel == nullptr) return;
     const auto group = Configs::dataManager->groupsRepo->CurrentGroup();
-    if (group == nullptr) return;
+    if (group == nullptr) {
+        selectedSelectorId = -1;
+        profilesFilterModel->clearAllowedProfileIds();
+        profilesTableModel->clearSelectorSelectedProfileId();
+        ui->selectorGroupList->clear();
+        ui->selectorGroupHint->hide();
+        ui->selectorGroupList->hide();
+        ui->selectorMemberToolbar->hide();
+        return;
+    }
     const int previous = selectedSelectorId;
     ui->selectorGroupList->blockSignals(true);
     ui->selectorGroupList->clear();
@@ -555,6 +564,10 @@ void MainWindow::refresh_selector_panel()
     }
 
 
+    const bool hasSelectors = !selectorIds.isEmpty();
+    ui->selectorGroupHint->setVisible(hasSelectors);
+    ui->selectorGroupList->setVisible(hasSelectors);
+    ui->selectorMemberToolbar->setVisible(hasSelectors);
     const int row = selectorIds.indexOf(previous) >= 0 ? selectorIds.indexOf(previous) : (selectorIds.isEmpty() ? -1 : 0);
     if (row < 0) {
         selectedSelectorId = -1;

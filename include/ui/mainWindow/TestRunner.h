@@ -60,7 +60,12 @@ private:
     void runLatencyGroup(LatencyKind kind, const QList<int>& requestedIDs,
                          const std::function<void()>& onFinished);
 
-    void runUrlProbe(const Target& target);
+    struct UrlProbeOutcome {
+        QList<int> failedIDs;
+        bool aborted = false;
+        bool incomplete = false;
+    };
+    UrlProbeOutcome runUrlProbe(const Target& target);
 
     void runIpProbe(const Target& target);
 

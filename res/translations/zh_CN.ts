@@ -8654,6 +8654,170 @@ Release note:
         <source>%1 member(s)</source>
         <translation type="unfinished"></translation>
     </message>
+    <message>
+        <source>Import was incomplete (%1 parse error(s)); successfully parsed profiles were kept.</source>
+        <translation>导入不完整（%1 个解析错误）；已保留成功解析的节点。</translation>
+    </message>
+    <message>
+        <source>Subscription refresh for %1 was not committed (%2 parse error(s)). Existing profiles, groups and routing rules were kept.</source>
+        <translation>订阅 %1 刷新未提交（%2 个解析错误）。原有节点、策略组和路由规则已保留。</translation>
+    </message>
+    <message>
+        <source>Subscription refresh failed</source>
+        <translation>订阅刷新失败</translation>
+    </message>
+    <message>
+        <source>No importable profile found in the document.</source>
+        <translation>文档中没有可导入的节点。</translation>
+    </message>
+    <message>
+        <source>Subscription parse error</source>
+        <translation>订阅解析错误</translation>
+    </message>
+    <message>
+        <source>Failed to convert the profile.</source>
+        <translation>节点转换失败。</translation>
+    </message>
+    <message>
+        <source>Failed to parse the profile.</source>
+        <translation>节点解析失败。</translation>
+    </message>
+    <message>
+        <source>Subscription nesting limit exceeded.</source>
+        <translation>订阅嵌套层数超过限制。</translation>
+    </message>
+    <message>
+        <source>Unrecognized JSON subscription document.</source>
+        <translation>无法识别 JSON 订阅文档。</translation>
+    </message>
+    <message>
+        <source>JSON %1 must be an array.</source>
+        <translation>JSON 字段 %1 必须是数组。</translation>
+    </message>
+    <message>
+        <source>Invalid outbound: expected a nonempty object.</source>
+        <translation>无效出站：需要非空对象。</translation>
+    </message>
+    <message>
+        <source>Unsupported outbound type: %1</source>
+        <translation>不支持的出站类型：%1</translation>
+    </message>
+    <message>
+        <source>Failed to convert JSON outbound: %1</source>
+        <translation>JSON 出站转换失败：%1</translation>
+    </message>
+    <message>
+        <source>Invalid Xray configuration: outbounds must be an array.</source>
+        <translation>无效 Xray 配置：outbounds 必须是数组。</translation>
+    </message>
+    <message>
+        <source>Invalid Xray outbound object.</source>
+        <translation>无效 Xray 出站对象。</translation>
+    </message>
+    <message>
+        <source>SIP008 servers must be an array.</source>
+        <translation>SIP008 servers 必须是数组。</translation>
+    </message>
+    <message>
+        <source>Invalid SIP008 server object.</source>
+        <translation>无效 SIP008 服务器对象。</translation>
+    </message>
+    <message>
+        <source>Failed to convert the SIP008 server.</source>
+        <translation>SIP008 服务器转换失败。</translation>
+    </message>
+    <message>
+        <source>Expected one Clash subscription document.</source>
+        <translation>需要单个 Clash 订阅文档。</translation>
+    </message>
+    <message>
+        <source>Empty Clash subscription document.</source>
+        <translation>Clash 订阅文档为空。</translation>
+    </message>
+    <message>
+        <source>Clash proxies must be a sequence.</source>
+        <translation>Clash proxies 必须是列表。</translation>
+    </message>
+    <message>
+        <source>Clash proxy %1 must have a name and type.</source>
+        <translation>Clash 节点 %1 必须包含名称和类型。</translation>
+    </message>
+    <message>
+        <source>Unsupported Clash proxy %1: %2</source>
+        <translation>不支持的 Clash 节点 %1：%2</translation>
+    </message>
+    <message>
+        <source>Failed to convert Clash proxy %1 (%2).</source>
+        <translation>Clash 节点 %1（%2）转换失败。</translation>
+    </message>
+    <message>
+        <source>Clash proxy %1: %2</source>
+        <translation>Clash 节点 %1：%2</translation>
+    </message>
+    <message>
+        <source>Failed to parse Clash proxy %1.</source>
+        <translation>Clash 节点 %1 解析失败。</translation>
+    </message>
+    <message>
+        <source>Clash rules must be a sequence.</source>
+        <translation>Clash rules 必须是列表。</translation>
+    </message>
+    <message>
+        <source>Clash rule must be a string.</source>
+        <translation>Clash 规则必须是字符串。</translation>
+    </message>
+    <message>
+        <source>Clash proxy-groups must be a sequence.</source>
+        <translation>Clash proxy-groups 必须是列表。</translation>
+    </message>
+    <message>
+        <source>Clash proxy group must have a name and type.</source>
+        <translation>Clash 策略组必须包含名称和类型。</translation>
+    </message>
+    <message>
+        <source>Clash group %1 proxies must be a sequence.</source>
+        <translation>Clash 策略组 %1 的 proxies 必须是列表。</translation>
+    </message>
+    <message>
+        <source>Clash selector %1 is missing proxies.</source>
+        <translation>Clash 策略组 %1 缺少 proxies。</translation>
+    </message>
+    <message>
+        <source>Clash proxy group: %1</source>
+        <translation>Clash 策略组：%1</translation>
+    </message>
+    <message>
+        <source>Failed to parse the Clash proxy group.</source>
+        <translation>Clash 策略组解析失败。</translation>
+    </message>
+    <message>
+        <source>Unrecognized profile or subscription data.</source>
+        <translation>无法识别节点或订阅数据。</translation>
+    </message>
+    <message>
+        <source>Failed to parse the %1 profile link.</source>
+        <translation>%1 节点链接解析失败。</translation>
+    </message>
+    <message>
+        <source>Invalid JSON profile link.</source>
+        <translation>无效 JSON 节点链接。</translation>
+    </message>
+    <message>
+        <source>Empty or invalid JSON profile link payload.</source>
+        <translation>JSON 节点链接内容为空或无效。</translation>
+    </message>
+    <message>
+        <source>Invalid JSON profile link payload.</source>
+        <translation>无效 JSON 节点链接内容。</translation>
+    </message>
+    <message>
+        <source>Failed to convert the JSON profile link.</source>
+        <translation>JSON 节点链接转换失败。</translation>
+    </message>
+    <message>
+        <source>Subscription refresh was not committed because profile storage failed. Existing profiles were kept.</source>
+        <translation>订阅刷新因节点保存失败而未提交，原有节点已保留。</translation>
+    </message>
 </context>
 <context>
     <name>QPlatformTheme</name>

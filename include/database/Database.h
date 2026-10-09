@@ -261,11 +261,15 @@ namespace Configs {
             }
         }
 
-        void execBatchInsertProfiles(const std::vector<ProfileInsertRow>& rows) {
+        bool execBatchInsertProfiles(const std::vector<ProfileInsertRow>& rows) {
             try {
+                SQLite::Transaction transaction(db);
                 execBatchInsertProfiles0(rows);
+                transaction.commit();
+                return true;
             } catch (std::exception& e) {
                 NotifyError("execBatchInsertProfiles", e);
+                return false;
             }
         }
 

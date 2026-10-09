@@ -250,9 +250,18 @@ namespace Subscription {
 
             void document(std::string_view raw, bool allowBase64, bool needParse, int depth);
 
+            ParseResult result() {
+                if (produced == 0 && !validEmpty && complete)
+                    fail(QObject::tr("No importable profile found in the document."));
+                return {complete, errorCount, produced};
+            }
+
         private:
             const ParseSink &sink;
             int produced = 0;
+            int errorCount = 0;
+            bool complete = true;
+            bool validEmpty = false;
 
             void produce(ProfilePtr ent) {
                 if (ent == nullptr) return;
@@ -264,9 +273,14 @@ namespace Subscription {
                 if (sink.log) sink.log(line);
             }
 
-            void warn(const QString &title, const QString &text) {
+            void fail(const QString &text, const QString &title = QObject::tr("Subscription parse error")) {
+                complete = false;
+                ++errorCount;
+                log(title + ": " + text);
                 if (sink.warn) sink.warn(title, text);
             }
+
+            void documentImpl(std::string_view raw, bool allowBase64, bool needParse, int depth);
 
             void json(const QJsonDocument &doc, std::string_view text);
             void singBox(const QJsonDocument &doc, SingBoxSubType type);
@@ -275,6 +289,16 @@ namespace Subscription {
             void clash(std::string_view text);
             void wireguardFile(std::string_view text);
             void openVpnFile(std::string_view text);
+
+            template<typename F> void entry(F &&parse) {
+                try {
+                    parse();
+                } catch (const std::exception &ex) {
+                    fail(QString::fromUtf8(ex.what()));
+                } catch (...) {
+                    fail(QObject::tr("Failed to convert the profile."));
+                }
+            }
             void openConnectProfile(std::string_view text);
             void link(std::string_view line, int depth);
             void jsonLink(const QString &str, bool throneAdd);
@@ -282,7 +306,20 @@ namespace Subscription {
         };
 
         void Parser::document(std::string_view raw, bool allowBase64, bool needParse, int depth) {
-            if (depth > kMaxDepth) return;
+            try {
+                documentImpl(raw, allowBase64, needParse, depth);
+            } catch (const std::exception &ex) {
+                fail(QString::fromUtf8(ex.what()));
+            } catch (...) {
+                fail(QObject::tr("Failed to parse the profile."));
+            }
+        }
+
+        void Parser::documentImpl(std::string_view raw, bool allowBase64, bool needParse, int depth) {
+            if (depth > kMaxDepth) {
+                fail(QObject::tr("Subscription nesting limit exceeded."));
+                return;
+            }
             const auto text = scan::trim(raw);
             if (text.empty()) return;
 
@@ -355,13 +392,21 @@ namespace Subscription {
                 return;
             }
 
-            if (text.find("version") != npos && text.find("servers") != npos) sip008(doc);
+            if (text.find("version") != npos && text.find("servers") != npos) {
+                sip008(doc);
+            } else {
+                fail(QObject::tr("Unrecognized JSON subscription document."));
+            }
         }
 
         void Parser::singBox(const QJsonDocument &doc, SingBoxSubType type) {
             QJsonArray outbounds, endpoints;
             if (type == SingBoxSubType::outboundInJson) {
                 const auto json = doc.object();
+                for (const auto &key : {"outbounds", "endpoints"}) {
+                    if (json.contains(key) && !json[key].isArray())
+                        fail(QObject::tr("JSON %1 must be an array.").arg(QLatin1String(key)));
+                }
                 outbounds = json["outbounds"].toArray();
                 endpoints = json["endpoints"].toArray();
             } else if (type == SingBoxSubType::outboundJsonArray) {
@@ -371,36 +416,49 @@ namespace Subscription {
             }
 
             const auto handle = [&](const QJsonValue &value) {
-                if (!value.isObject()) return;
-                const auto out = value.toObject();
-                if (out.isEmpty()) {
-                    log("invalid outbound: empty object");
+                if (!value.isObject() || value.toObject().isEmpty()) {
+                    fail(QObject::tr("Invalid outbound: expected a nonempty object."));
                     return;
                 }
-                const char *profileType = typeForSingBox(out["type"].toString());
-                if (profileType == nullptr) return;
+                const auto out = value.toObject();
+                const auto typeName = out["type"].toString();
+                const char *profileType = typeForSingBox(typeName);
+                // These are config helpers, not profiles to import.
+                if (profileType == nullptr && (typeName == "direct" || typeName == "block" || typeName == "dns" ||
+                                              typeName == "selector" || typeName == "urltest")) return;
+                if (profileType == nullptr) {
+                    fail(QObject::tr("Unsupported outbound type: %1").arg(typeName));
+                    return;
+                }
                 auto ent = Configs::ProfilesRepo::NewProfile(profileType);
-                if (!ent->outbound->ParseFromJson(out)) return;
+                if (!ent->outbound->ParseFromJson(out)) {
+                    fail(QObject::tr("Failed to convert JSON outbound: %1").arg(out["tag"].toString()));
+                    return;
+                }
                 produce(ent);
             };
-            for (const auto &outbound : outbounds) handle(outbound);
-            for (const auto &endpoint : endpoints) handle(endpoint);
+            for (const auto &outbound : outbounds) entry([&] { handle(outbound); });
+            for (const auto &endpoint : endpoints) entry([&] { handle(endpoint); });
         }
 
         void Parser::xray(const QJsonDocument &doc, XraySubType type) {
             // Each element is a self-contained config (balancers, dialerProxy chains) that must run verbatim.
             if (type == XraySubType::configJsonArray) {
                 for (const auto &c : doc.array()) {
-                    if (!c.isObject()) continue;
-                    auto cfg = c.toObject();
-                    if (!cfg.contains("outbounds")) continue;
-                    // Throne injects its own bridge inbound; the bundled ones only risk port-bind conflicts.
-                    cfg.remove("inbounds");
-                    auto ent = Configs::ProfilesRepo::NewProfile("custom");
-                    ent->Custom()->type = Configs::Custom::CustomXrayFullConfig;
-                    ent->Custom()->config = QJsonObject2QString(cfg, false);
-                    if (const auto remarks = cfg["remarks"].toString(); !remarks.isEmpty()) ent->Custom()->name = remarks;
-                    produce(ent);
+                    entry([&] {
+                        if (!c.isObject() || !c.toObject()["outbounds"].isArray()) {
+                            fail(QObject::tr("Invalid Xray configuration: outbounds must be an array."));
+                            return;
+                        }
+                        auto cfg = c.toObject();
+                        // Throne injects its own bridge inbound; the bundled ones only risk port-bind conflicts.
+                        cfg.remove("inbounds");
+                        auto ent = Configs::ProfilesRepo::NewProfile("custom");
+                        ent->Custom()->type = Configs::Custom::CustomXrayFullConfig;
+                        ent->Custom()->config = QJsonObject2QString(cfg, false);
+                        if (const auto remarks = cfg["remarks"].toString(); !remarks.isEmpty()) ent->Custom()->name = remarks;
+                        produce(ent);
+                    });
                 }
                 return;
             }
@@ -414,75 +472,162 @@ namespace Subscription {
                 return;
             }
             for (const auto &o : outbounds) {
-                if (!o.isObject()) continue;
-                produce(makeProfileForXrayOutbound(o.toObject()));
+                entry([&] {
+                    if (!o.isObject() || !o.toObject()["protocol"].isString()) {
+                        fail(QObject::tr("Invalid Xray outbound object."));
+                        return;
+                    }
+                    produce(makeProfileForXrayOutbound(o.toObject()));
+                });
             }
         }
 
         void Parser::sip008(const QJsonDocument &doc) {
+            if (!doc.object()["servers"].isArray()) {
+                fail(QObject::tr("SIP008 servers must be an array."));
+                return;
+            }
             for (const auto &o : doc.object()["servers"].toArray()) {
-                const auto out = o.toObject();
-                if (out.isEmpty()) {
-                    log("invalid server object");
-                    continue;
-                }
-                auto ent = Configs::ProfilesRepo::NewProfile("shadowsocks");
-                if (!ent->ShadowSocks()->ParseFromSIP008(out)) continue;
-                produce(ent);
+                entry([&] {
+                    const auto out = o.toObject();
+                    if (out.isEmpty()) {
+                        fail(QObject::tr("Invalid SIP008 server object."));
+                        return;
+                    }
+                    auto ent = Configs::ProfilesRepo::NewProfile("shadowsocks");
+                    if (!ent->ShadowSocks()->ParseFromSIP008(out)) {
+                        fail(QObject::tr("Failed to convert the SIP008 server."));
+                        return;
+                    }
+                    produce(ent);
+                });
             }
         }
 
         void Parser::clash(std::string_view text) {
             try {
-                const fkyaml::node root = fkyaml::node::deserialize(sanitizeClashYaml(text));
-                if (!root.is_mapping() || !root.contains("proxies")) return;
-                const auto &proxies = root["proxies"];
-                if (!proxies.is_sequence()) return;
-
-                // One entry at a time: clash::Proxies is several KB even when empty.
-                for (const auto &node : proxies) {
-                    const auto out = node.get_value<clash::Proxies>();
-                    const char *profileType = typeForClash(out.type);
-                    if (profileType == nullptr) continue;
-                    ProfilePtr ent;
-                    if (out.type == "vless" && (out.network == "xhttp" || (!out.encryption.empty() && out.encryption != "none"))) {
-                        ent = Configs::ProfilesRepo::NewProfile("xrayvless");
-                    } else {
-                        ent = Configs::ProfilesRepo::NewProfile(profileType);
+                // fkYAML accepts an unfinished flow collection at EOF. An explicit
+                // end marker forces it to validate closure; parse all documents so
+                // a valid prefix cannot hide a malformed trailing document.
+                auto yaml = sanitizeClashYaml(text);
+                yaml += "\n...\n";
+                const auto documents = fkyaml::node::deserialize_docs(yaml);
+                const fkyaml::node *document = nullptr;
+                for (const auto &candidate : documents) {
+                    if (candidate.is_null()) continue;
+                    if (document != nullptr) {
+                        fail(QObject::tr("Expected one Clash subscription document."));
+                        return;
                     }
-                    if (!ent->outbound->ParseFromClash(out)) continue;
-                    produce(ent);
+                    document = &candidate;
+                }
+                if (document == nullptr) {
+                    fail(QObject::tr("Empty Clash subscription document."));
+                    return;
+                }
+                const auto &root = *document;
+                if (!root.is_mapping() || !root.contains("proxies") || !root["proxies"].is_sequence()) {
+                    fail(QObject::tr("Clash proxies must be a sequence."));
+                    return;
+                }
+                const auto &proxies = root["proxies"];
+                if (proxies.empty()) validEmpty = true;
+
+                // Conversion errors belong to an entry, not the entire loop.
+                int entry = 0;
+                for (const auto &node : proxies) {
+                    ++entry;
+                    try {
+                        if (!node.is_mapping() || !node.contains("type") || !node.contains("name")) {
+                            fail(QObject::tr("Clash proxy %1 must have a name and type.").arg(entry));
+                            continue;
+                        }
+                        const auto out = node.get_value<clash::Proxies>();
+                        const char *profileType = typeForClash(out.type);
+                        if (profileType == nullptr) {
+                            fail(QObject::tr("Unsupported Clash proxy %1: %2").arg(entry).arg(QString::fromStdString(out.type)));
+                            continue;
+                        }
+                        ProfilePtr ent;
+                        if (out.type == "vless" && (out.network == "xhttp" || (!out.encryption.empty() && out.encryption != "none"))) {
+                            ent = Configs::ProfilesRepo::NewProfile("xrayvless");
+                        } else {
+                            ent = Configs::ProfilesRepo::NewProfile(profileType);
+                        }
+                        if (!ent->outbound->ParseFromClash(out)) {
+                            fail(QObject::tr("Failed to convert Clash proxy %1 (%2).").arg(entry).arg(QString::fromStdString(out.name)));
+                            continue;
+                        }
+                        produce(ent);
+                    } catch (const std::exception &ex) {
+                        fail(QObject::tr("Clash proxy %1: %2").arg(entry).arg(QString::fromUtf8(ex.what())));
+                    } catch (...) {
+                        fail(QObject::tr("Failed to parse Clash proxy %1.").arg(entry));
+                    }
                 }
 
-                if (sink.ruleLine && root.contains("rules") && root["rules"].is_sequence()) {
-                    for (const auto &rule : root["rules"])
-                        if (rule.is_string()) sink.ruleLine(QString::fromStdString(rule.get_value<std::string>()));
+                if (root.contains("rules")) {
+                    if (!root["rules"].is_sequence()) {
+                        fail(QObject::tr("Clash rules must be a sequence."));
+                    } else {
+                        for (const auto &rule : root["rules"]) {
+                            if (!rule.is_string()) {
+                                fail(QObject::tr("Clash rule must be a string."));
+                                continue;
+                            }
+                            if (sink.ruleLine) sink.ruleLine(QString::fromStdString(rule.get_value<std::string>()));
+                        }
+                    }
                 }
-                if (!sink.proxyGroup || !root.contains("proxy-groups") || !root["proxy-groups"].is_sequence()) return;
+                if (!root.contains("proxy-groups")) return;
+                if (!root["proxy-groups"].is_sequence()) {
+                    fail(QObject::tr("Clash proxy-groups must be a sequence."));
+                    return;
+                }
                 for (const auto &node : root["proxy-groups"]) {
-                    if (!node.is_mapping() || !node.contains("name") || !node.contains("type") || !node.contains("proxies")) continue;
-                    const auto type = node["type"].get_value<std::string>();
-                    if (QString::fromStdString(type).compare("select", Qt::CaseInsensitive) != 0 || !node["proxies"].is_sequence()) continue;
-                    ProxyGroup group;
-                    group.name = QString::fromStdString(node["name"].get_value<std::string>());
-                    group.type = QString::fromStdString(type);
-                    for (const auto &member : node["proxies"])
-                        if (member.is_string()) group.proxies << QString::fromStdString(member.get_value<std::string>());
-                    if (node.contains("selected") && node["selected"].is_string())
-                        group.selected = QString::fromStdString(node["selected"].get_value<std::string>());
-                    sink.proxyGroup(group);
+                    try {
+                        if (!node.is_mapping() || !node.contains("name") || !node.contains("type")) {
+                            fail(QObject::tr("Clash proxy group must have a name and type."));
+                            continue;
+                        }
+                        ProxyGroup group;
+                        group.name = QString::fromStdString(node["name"].get_value<std::string>());
+                        group.type = QString::fromStdString(node["type"].get_value<std::string>());
+                        const bool selector = group.type.compare("select", Qt::CaseInsensitive) == 0;
+                        if (node.contains("proxies")) {
+                            if (!node["proxies"].is_sequence()) {
+                                fail(QObject::tr("Clash group %1 proxies must be a sequence.").arg(group.name));
+                                continue;
+                            }
+                            for (const auto &member : node["proxies"])
+                                group.proxies << QString::fromStdString(member.get_value<std::string>());
+                        } else if (selector) {
+                            fail(QObject::tr("Clash selector %1 is missing proxies.").arg(group.name));
+                            continue;
+                        }
+                        if (node.contains("selected"))
+                            group.selected = QString::fromStdString(node["selected"].get_value<std::string>());
+                        if (selector && sink.proxyGroup) sink.proxyGroup(group);
+                    } catch (const std::exception &ex) {
+                        fail(QObject::tr("Clash proxy group: %1").arg(QString::fromUtf8(ex.what())));
+                    } catch (...) {
+                        fail(QObject::tr("Failed to parse the Clash proxy group."));
+                    }
                 }
             // fkYAML can throw beyond fkyaml::exception on hostile input (bad_alloc, length_error).
             } catch (const std::exception &ex) {
-                warn("YAML Exception", QString::fromUtf8(ex.what()));
+                fail(QString::fromUtf8(ex.what()), "YAML Exception");
             } catch (...) {
-                warn("YAML Exception", QObject::tr("Failed to parse the Clash configuration."));
+                fail(QObject::tr("Failed to parse the Clash configuration."), "YAML Exception");
             }
         }
 
         void Parser::wireguardFile(std::string_view text) {
             auto ent = Configs::ProfilesRepo::NewProfile("wireguard");
-            if (!ent->Wireguard()->ParseFromLink(toQString(text))) return;
+            if (!ent->Wireguard()->ParseFromLink(toQString(text))) {
+                fail(QObject::tr("Failed to import the WireGuard profile."));
+                return;
+            }
             produce(ent);
         }
 
@@ -492,7 +637,7 @@ namespace Subscription {
             const auto ok = Configs::ParseOvpnConfig(toQString(text), *ent->OpenVPN(), &problems);
             for (const auto &problem : problems) log("OpenVPN: " + problem);
             if (!ok) {
-                log(QObject::tr("Failed to import the OpenVPN profile."));
+                fail(QObject::tr("Failed to import the OpenVPN profile."));
                 return;
             }
             produce(ent);
@@ -506,7 +651,7 @@ namespace Subscription {
                 const auto ok = Configs::ParseAnyConnectXml(str, hosts, &problems);
                 for (const auto &problem : problems) log("OpenConnect: " + problem);
                 if (!ok) {
-                    log(QObject::tr("Failed to import the OpenConnect profile."));
+                    fail(QObject::tr("Failed to import the OpenConnect profile."));
                     return;
                 }
                 for (const auto &host : hosts) {
@@ -521,7 +666,7 @@ namespace Subscription {
             const auto ok = Configs::ParseOpenConnectProfile(str, *ent->OpenConnect(), &problems);
             for (const auto &problem : problems) log("OpenConnect: " + problem);
             if (!ok) {
-                log(QObject::tr("Failed to import the OpenConnect profile."));
+                fail(QObject::tr("Failed to import the OpenConnect profile."));
                 return;
             }
             produce(ent);
@@ -544,7 +689,10 @@ namespace Subscription {
             }
 
             const char *profileType = typeForScheme(line);
-            if (profileType == nullptr) return;
+            if (profileType == nullptr) {
+                fail(QObject::tr("Unrecognized profile or subscription data."));
+                return;
+            }
             const auto str = toQString(line);
             ProfilePtr ent;
             if (line.starts_with("vless://") && Configs::useXrayVless(str)) {
@@ -552,20 +700,32 @@ namespace Subscription {
             } else {
                 ent = Configs::ProfilesRepo::NewProfile(profileType);
             }
-            if (!ent->outbound->ParseFromLink(str)) return;
+            if (!ent->outbound->ParseFromLink(str)) {
+                fail(QObject::tr("Failed to parse the %1 profile link.").arg(QLatin1String(profileType)));
+                return;
+            }
             produce(ent);
         }
 
         void Parser::jsonLink(const QString &str, bool throneAdd) {
             const QUrl link(str);
-            if (!link.isValid()) return;
+            if (!link.isValid()) {
+                fail(QObject::tr("Invalid JSON profile link."));
+                return;
+            }
             auto dataBytes = throneAdd ? DecodeB64IfValid(link.path().mid(1))
                                        : DecodeB64IfValid(link.fragment().toUtf8(), QByteArray::Base64UrlEncoding);
             // ExportJsonLink emits the url-safe alphabet, which the standard decoder rejects whenever '-' or '_' occurs.
             if (dataBytes.isEmpty() && throneAdd) dataBytes = DecodeB64IfValid(link.path().mid(1), QByteArray::Base64UrlEncoding);
-            if (dataBytes.isEmpty()) return;
+            if (dataBytes.isEmpty()) {
+                fail(QObject::tr("Empty or invalid JSON profile link payload."));
+                return;
+            }
             const auto data = QJsonDocument::fromJson(dataBytes).object();
-            if (data.isEmpty()) return;
+            if (data.isEmpty()) {
+                fail(QObject::tr("Invalid JSON profile link payload."));
+                return;
+            }
             ProfilePtr ent;
             if (data.contains("protocol")) {
                 ent = Configs::ProfilesRepo::NewProfile("xray" + data["protocol"].toString());
@@ -573,8 +733,10 @@ namespace Subscription {
                 ent = data["type"].toString() == "hysteria2" ? Configs::ProfilesRepo::NewProfile("hysteria")
                                                               : Configs::ProfilesRepo::NewProfile(data["type"].toString());
             }
-            if (ent->outbound->invalid) return;
-            ent->outbound->ParseFromJson(data);
+            if (ent->outbound->invalid || !ent->outbound->ParseFromJson(data)) {
+                fail(QObject::tr("Failed to convert the JSON profile link."));
+                return;
+            }
             produce(ent);
         }
 
@@ -585,7 +747,7 @@ namespace Subscription {
             auto dataBytes = DecodeB64IfValid(raw);
             if (dataBytes.isEmpty()) dataBytes = DecodeB64IfValid(raw, QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals);
             if (dataBytes.isEmpty()) {
-                log(QObject::tr("Failed to decode the vpn:// link."));
+                fail(QObject::tr("Failed to decode the vpn:// link."));
                 return;
             }
             if (const auto uncompressed = uncompressVpnPayload(dataBytes); !uncompressed.isEmpty()) dataBytes = uncompressed;
@@ -619,13 +781,12 @@ namespace Subscription {
             } else {
                 document(scan::view(dataBytes), false, true, depth + 1);
             }
-            if (produced == before) log(QObject::tr("No importable profile found in the vpn:// link."));
+            if (produced == before) fail(QObject::tr("No importable profile found in the vpn:// link."));
         }
     }
 
-    void ParseDocument(QByteArray body, const ParseSink &sink) {
+    ParseResult ParseDocument(QByteArray body, const ParseSink &sink) {
         scan::trimInPlace(body);
-        if (body.isEmpty()) return;
 
         if (scan::looksLikeBase64(scan::view(body))) {
             if (auto decoded = scan::decodeBase64(scan::view(body)); !decoded.isEmpty()) body = std::move(decoded);
@@ -635,9 +796,10 @@ namespace Subscription {
 
         Parser parser(sink);
         parser.document(scan::view(body), false, true, 0);
+        return parser.result();
     }
 
-    void ParseText(const QString &text, const ParseSink &sink) {
-        ParseDocument(text.toUtf8(), sink);
+    ParseResult ParseText(const QString &text, const ParseSink &sink) {
+        return ParseDocument(text.toUtf8(), sink);
     }
 }

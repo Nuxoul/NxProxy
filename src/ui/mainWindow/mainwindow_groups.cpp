@@ -6,6 +6,7 @@
 #include <QTimer>
 #include <QGridLayout>
 #include <QVBoxLayout>
+#include "include/ui/utils/ProfilePageLayout.hpp"
 
 #include "include/configs/sub/GroupUpdater.hpp"
 #include "include/database/GroupsRepo.h"
@@ -19,6 +20,11 @@ void MainWindow::on_tabWidget_currentChanged(int index) {
     const auto gid = tabIndex2GroupId(index);
     if (gid == Configs::dataManager->settingsRepo->current_group) return;
     show_group(gid);
+}
+
+void MainWindow::attachProfilePage(QWidget* page) {
+    ProfilePageLayout::attach(page, ui->selectorGroupHint, ui->selectorGroupList,
+                              ui->selectorMemberToolbar, ui->profilesTableView);
 }
 
 void MainWindow::show_group(int gid) {
@@ -45,16 +51,9 @@ void MainWindow::show_group(int gid) {
         Configs::dataManager->settingsRepo->Save();
     }
 
-    // The table follows the active group into its page. It must land in the cell that page reserved
-    // for it: a coordinate-less addWidget() appends at the next free cell, which put the whole table
-    // under the strategy panel in the left column instead of beside it.
-    if (auto *page = ui->tabWidget->widget(groupId2TabIndex(gid))) {
-        if (page == ui->widget1) {
-            static_cast<QGridLayout *>(page->layout())->addWidget(ui->profilesTableView, 1, 1);
-        } else if (page->layout() != nullptr) {
-            page->layout()->addWidget(ui->profilesTableView);
-        }
-    }
+    // The strategy list, its headers and the table are one shared page interface.
+    // Move all of them, not only the table (which left a hidden list filtering other tabs).
+    attachProfilePage(ui->tabWidget->widget(groupId2TabIndex(gid)));
 
     refresh_selector_panel();
     refresh_proxy_list({}, true);
@@ -95,6 +94,8 @@ void MainWindow::resortCurrentGroupAfterTest(int groupID)
 void MainWindow::refresh_groups() {
     Configs::dataManager->settingsRepo->refreshing_group_list = true;
 
+    // Park shared widgets on the retained page before detaching their old tab.
+    attachProfilePage(ui->widget1);
     for (int i = ui->tabWidget->count() - 1; i > 0; i--) {
         ui->tabWidget->removeTab(i);
     }
@@ -106,7 +107,7 @@ void MainWindow::refresh_groups() {
             ui->tabWidget->setTabText(0, group->name);
         } else {
             auto widget2 = new QWidget();
-            auto layout2 = new QVBoxLayout();
+            auto layout2 = new QGridLayout();
             layout2->setContentsMargins(QMargins());
             layout2->setSpacing(0);
             widget2->setLayout(layout2);

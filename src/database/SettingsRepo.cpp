@@ -344,6 +344,8 @@ namespace Configs {
             std::to_string(sub_auto_update_last));
         addPair(QStringLiteral("route_auto_update_last"),
             std::to_string(route_auto_update_last));
+        addPair(QStringLiteral("auto_latency_test_last"),
+            std::to_string(auto_latency_test_last));
 
         db.execBatchSettingsReplace(keyValues);
     }

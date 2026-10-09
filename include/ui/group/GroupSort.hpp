@@ -10,6 +10,7 @@ namespace GroupSortMethod {
         ById,
         ByTraffic,
         BySecurity,
+        ByLatency, // Dedicated URL sweep ordering, independent of the manual test-result preference.
     };
 }
 

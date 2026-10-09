@@ -1232,23 +1232,25 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                 // Only while connected, and never on top of a running test (a manual one or the previous sweep).
                 if (running == nullptr || testRunner->isRunning()) return;
                 QSet<int> distinct;
+                QList<int> measuredGroups;
                 for (const int gid : Configs::dataManager->groupsRepo->GetGroupsTabOrder()) {
                     const auto group = Configs::dataManager->groupsRepo->GetGroup(gid);
                     if (group == nullptr) continue;
-                    for (const int id : group->Profiles()) distinct.insert(id);
+                    const auto ids = group->Profiles();
+                    if (!ids.isEmpty()) measuredGroups.append(gid);
+                    for (const int id : ids) distinct.insert(id);
                 }
                 if (distinct.isEmpty()) return;
                 const QList<int> targets(distinct.constBegin(), distinct.constEnd());
-                const bool descending = testResultSortDescending;
-                testRunner->runUrlTests(targets, [this, descending] {
-                    // The same re-sort a manual group test performs, applied to every group that was just measured.
-                    runOnNewThread([this, descending] {
-                        for (const int gid : Configs::dataManager->groupsRepo->GetGroupsTabOrder()) {
+                testRunner->runUrlTests(targets, [this, measuredGroups] {
+                    // URL sweeps always order by latency, not the group's last speed/IP sort choice.
+                    runOnNewThread([this, measuredGroups] {
+                        for (const int gid : measuredGroups) {
                             const auto group = Configs::dataManager->groupsRepo->GetGroup(gid);
                             if (group == nullptr) continue;
                             GroupSortAction action;
-                            action.method = GroupSortMethod::ByTestResult;
-                            action.descending = descending;
+                            action.method = GroupSortMethod::ByLatency;
+                            action.descending = false;
                             if (!group->SortProfiles(action)) continue;
                             Configs::dataManager->groupsRepo->Save(group);
                         }

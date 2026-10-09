@@ -3,6 +3,7 @@
 #include "include/configs/sub/SubscriptionParser.hpp"
 #include "include/configs/sub/SubscriptionReconcile.hpp"
 #include "include/database/GroupsRepo.h"
+#include "include/database/ProfilesRepo.h"
 #include "include/database/RoutesRepo.h"
 #include "include/global/HTTPRequestHelper.hpp"
 #include "include/global/Utils.hpp"
@@ -58,6 +59,7 @@ namespace Subscription {
             ImportSink(int gid, ContentIndex *index) : gid(gid), index(index) {}
 
             void add(std::shared_ptr<Configs::Profile> ent) {
+                if (failed) return;
                 NewEntry entry;
                 entry.display = ent->outbound->DisplayTypeAndName();
                 if (index != nullptr) {
@@ -81,12 +83,17 @@ namespace Subscription {
             void flush() {
                 if (chunk.isEmpty()) return;
                 if (Configs::dataManager->profilesRepo->AddProfileBatch(chunk, gid)) {
-                    for (qsizetype i = 0; i < chunk.size(); ++i) entries[entryIndex[i]].id = chunk[i]->id;
-                }
+                    for (qsizetype i = 0; i < chunk.size(); ++i) {
+                        entries[entryIndex[i]].id = chunk[i]->id;
+                        insertedIDs.append(chunk[i]->id);
+                    }
+                } else failed = true;
                 chunk.clear();
                 entryIndex.clear();
             }
 
+            bool failed = false;
+            QList<int> insertedIDs;
             QList<NewEntry> entries;
             QList<ProxyGroup> proxyGroups;
             QStringList ruleLines;
@@ -108,6 +115,29 @@ namespace Subscription {
             };
             return parseSink;
         }
+
+        // No database writes until the entire document has been validated.
+        struct StagedSubscription {
+            QList<std::shared_ptr<Configs::Profile>> profiles;
+            QList<ProxyGroup> proxyGroups;
+            QStringList ruleLines;
+
+            ParseSink parseSink() {
+                ParseSink sink;
+                sink.profile = [this](std::shared_ptr<Configs::Profile> ent) { profiles.append(std::move(ent)); };
+                sink.proxyGroup = [this](const ProxyGroup &group) { proxyGroups.append(group); };
+                sink.ruleLine = [this](const QString &line) { ruleLines.append(line); };
+                sink.log = [](const QString &line) { MW_show_log(line); };
+                return sink;
+            }
+
+            void commitTo(ImportSink &sink) {
+                for (auto &profile : profiles) sink.add(std::move(profile));
+                sink.proxyGroups = std::move(proxyGroups);
+                sink.ruleLines = std::move(ruleLines);
+                sink.flush();
+            }
+        };
         void applyProxyGroups(int gid, const QList<ProxyGroup> &groups) {
             if (groups.isEmpty()) return;
             const auto group = Configs::dataManager->groupsRepo->GetGroup(gid < 0 ? Configs::dataManager->settingsRepo->current_group : gid);
@@ -139,6 +169,7 @@ namespace Subscription {
                         break;
                     }
                 }
+                const bool existing = selectorProfile != nullptr;
                 if (selectorProfile == nullptr) {
                     selectorProfile = Configs::ProfilesRepo::NewProfile("selector");
                     if (selectorProfile == nullptr || selectorProfile->outbound == nullptr) continue;
@@ -155,8 +186,9 @@ namespace Subscription {
                 if (selector == nullptr) continue;
                 const int oldSelected = selector->selectedID;
                 selector->members = members;
-                int selected = profilesByName.value(remote.selected.trimmed().toLower(), -1);
-                if (!members.contains(selected)) selected = members.contains(oldSelected) ? oldSelected : members.first();
+                int selected = existing && members.contains(oldSelected)
+                                   ? oldSelected : profilesByName.value(remote.selected.trimmed().toLower(), -1);
+                if (!members.contains(selected)) selected = members.first();
                 selector->selectedID = selected;
                 selector->name = remote.name;
                 selectorProfile->name = remote.name;
@@ -219,9 +251,10 @@ namespace Subscription {
             return '^' + result + '$';
         }
 
-        std::shared_ptr<Configs::RouteProfile> managedRoute(int gid, const QString &sourceName) {
+        std::shared_ptr<Configs::RouteProfile> managedRoute(int gid, const QString &sourceName, bool &created) {
+            created = false;
             for (const auto &route : Configs::dataManager->routesRepo->GetAllRouteProfiles()) {
-                if (route != nullptr && route->managedBySubscription && route->managedGroupID == gid && route->managedSourceName == sourceName)
+                if (route != nullptr && route->managedBySubscription && route->managedGroupID == gid)
                     return route;
             }
             auto route = Configs::RoutesRepo::NewRouteProfile();
@@ -230,6 +263,7 @@ namespace Subscription {
             route->managedGroupID = gid;
             route->managedSourceName = sourceName;
             if (!Configs::dataManager->routesRepo->AddRouteProfile(route)) return nullptr;
+            created = true;
             return route;
         }
 
@@ -239,7 +273,7 @@ namespace Subscription {
             if (group == nullptr) return;
             if (lines.isEmpty()) {
                 for (const auto &route : Configs::dataManager->routesRepo->GetAllRouteProfiles()) {
-                    if (route == nullptr || !route->managedBySubscription || route->managedGroupID != targetGroup || route->managedSourceName != group->name) continue;
+                    if (route == nullptr || !route->managedBySubscription || route->managedGroupID != targetGroup) continue;
                     route->Rules.clear();
                     route->defaultOutboundID = Configs::proxyID;
                     Configs::dataManager->routesRepo->Save(route);
@@ -255,7 +289,8 @@ namespace Subscription {
                 if (!name.isEmpty()) selectorIds.insert(name.toLower(), id);
             }
 
-            auto route = managedRoute(targetGroup, group->name);
+            bool created = false;
+            auto route = managedRoute(targetGroup, group->name, created);
             if (route == nullptr) return;
             route->Rules.clear();
             route->defaultOutboundID = Configs::proxyID;
@@ -294,8 +329,10 @@ namespace Subscription {
             }
 
             Configs::dataManager->routesRepo->Save(route);
-            Configs::dataManager->settingsRepo->current_route_id = route->id;
-            Configs::dataManager->settingsRepo->Save();
+            if (created) {
+                Configs::dataManager->settingsRepo->current_route_id = route->id;
+                Configs::dataManager->settingsRepo->Save();
+            }
             MW_show_log(QObject::tr("Imported %1 routing rules into %2.").arg(route->Rules.size()).arg(route->name));
         }
         QString notice(const QStringList &names, const QString &prefix, const QString &action) {
@@ -459,7 +496,13 @@ namespace Subscription {
         ImportSink sink(gid, nullptr);
 
         MW_show_log(">>>>>>>> " + QObject::tr("Processing subscription data..."));
-        for (auto &document : documents) ParseDocument(std::move(document), sinkFor(sink));
+        int errors = 0;
+        for (auto &document : documents) {
+            const auto result = ParseDocument(std::move(document), sinkFor(sink));
+            if (!result.complete) errors += result.errorCount;
+        }
+        if (errors > 0)
+            MW_show_log(QObject::tr("Import was incomplete (%1 parse error(s)); successfully parsed profiles were kept.").arg(errors));
         sink.flush();
         applyProxyGroups(gid, sink.proxyGroups);
         applyProxyRules(gid, sink.ruleLines);
@@ -480,9 +523,16 @@ namespace Subscription {
         QString userInfo;
         if (!fetch(group->url.trimmed(), group->name, body, userInfo)) return;
 
-        group->sub_last_update = QDateTime::currentMSecsSinceEpoch() / 1000;
-        group->info = userInfo;
-        groupsRepo->Save(group);
+        MW_show_log(">>>>>>>> " + QObject::tr("Processing subscription data..."));
+        StagedSubscription staged;
+        const auto result = ParseDocument(std::move(body), staged.parseSink());
+        if (!result.complete) {
+            const auto message = QObject::tr("Subscription refresh for %1 was not committed (%2 parse error(s)). Existing profiles, groups and routing rules were kept.")
+                                     .arg(group->name).arg(result.errorCount);
+            MW_show_log(message);
+            runOnUiThread([message] { MessageBoxWarning(QObject::tr("Subscription refresh failed"), message); });
+            return;
+        }
 
         // Auto selectors are local state, not servers the remote sent: keep them out of the diff.
         QList<int> selectorIds;
@@ -508,18 +558,10 @@ namespace Subscription {
 
         // Ids a running auto selector can no longer trust: deleted, or same id with new settings.
         QList<int> disturbed;
-        bool cleared = false;
-        if (settings->sub_clear) {
-            MW_show_log(QObject::tr("Clearing servers..."));
-            const auto outcome = deleteProfiles(members());
-            if (!outcome.ok) {
-                runOnUiThread([] { MessageBoxWarning("Internal Error", "DB Error when deleting profiles, Please try again."); });
-                return;
-            }
-            disturbed = outcome.deleted;
-            // A survivor still belongs to the subscription: fall through to the diff.
-            cleared = outcome.kept.isEmpty();
-        }
+        const bool cleared = settings->sub_clear;
+        const auto oldMembers = members();
+        const auto previousProfiles = group->Profiles();
+        // Clear mode must not delete its old snapshot until the replacement inserts succeed.
 
         QList<OldEntry> old;
         if (!cleared) {
@@ -534,9 +576,21 @@ namespace Subscription {
         ContentIndex index(old);
         ImportSink sink(gid, cleared ? nullptr : &index);
 
-        MW_show_log(">>>>>>>> " + QObject::tr("Processing subscription data..."));
-        ParseDocument(std::move(body), sinkFor(sink));
-        sink.flush();
+        staged.commitTo(sink);
+        if (sink.failed) {
+            // Roll back successful earlier chunks; never reconcile a failed write as a full snapshot.
+            auto inserted = sink.insertedIDs;
+            profilesRepo->BatchDeleteProfiles(inserted);
+            group->profiles = previousProfiles;
+            groupsRepo->Save(group);
+            MW_show_log(QObject::tr("Subscription refresh was not committed because profile storage failed. Existing profiles were kept."));
+            return;
+        }
+        if (cleared) {
+            const auto outcome = deleteProfiles(oldMembers);
+            disturbed = outcome.deleted;
+            if (!outcome.ok) return;
+        }
 
         QString change_text;
         if (cleared) {
@@ -598,6 +652,10 @@ namespace Subscription {
         }
         applyProxyGroups(gid, sink.proxyGroups);
         applyProxyRules(gid, sink.ruleLines);
+
+        group->sub_last_update = QDateTime::currentMSecsSinceEpoch() / 1000;
+        group->info = userInfo;
+        groupsRepo->Save(group);
 
         MW_show_log("<<<<<<<< " + QObject::tr("Change of %1:").arg(group->name) + "\n" + change_text);
         if (showDiff && settings->sub_show_change_popup) {

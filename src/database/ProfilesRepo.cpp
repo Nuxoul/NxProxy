@@ -197,9 +197,11 @@ namespace Configs {
         profile->id = newId;
         if (profile->outbound) profile->outbound->profile_id = newId;
         profile->gid = gid < 0 ? Configs::dataManager->settingsRepo->current_group : gid;
-        QMutexLocker locker(&mutex);
-        identityMap[newId] = std::weak_ptr<Profile>(profile);
-        saveToDatabase(profile.get(), profile->id);
+        {
+            QMutexLocker locker(&mutex);
+            identityMap[newId] = std::weak_ptr<Profile>(profile);
+            saveToDatabase(profile.get(), profile->id);
+        }
         if (auto group = dataManager->groupsRepo->GetGroup(profile->gid)) {
             group->AddProfile(profile->id);
             dataManager->groupsRepo->Save(group);
@@ -237,7 +239,16 @@ namespace Configs {
         for (int i = 0; i < n; ++i) {
             rows.push_back(profileToInsertRow(toAdd[i].get(), toAdd[i]->id, toAdd[i]->gid));
         }
-        db.execBatchInsertProfiles(rows);
+        if (!db.execBatchInsertProfiles(rows)) {
+            for (auto& profile : toAdd) {
+                identityMap.erase(profile->id);
+                profile->id = -1;
+                if (profile->outbound) profile->outbound->profile_id = -1;
+            }
+            return false;
+        }
+        // Group updates must not run under ProfilesRepo::mutex (sorting also reads this repo).
+        locker.unlock();
 
         QList<int> profileIDs;
         for (const auto& profile : toAdd) {

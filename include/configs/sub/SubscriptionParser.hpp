@@ -25,8 +25,16 @@ namespace Subscription {
         std::function<void(const QString &, const QString &)> warn;
     };
 
-    // Profiles are handed to the sink in document order; the body is consumed in place.
-    void ParseDocument(QByteArray body, const ParseSink &sink);
+    struct ParseResult {
+        bool complete = true;
+        int errorCount = 0;
+        int profileCount = 0;
+    };
 
-    void ParseText(const QString &text, const ParseSink &sink);
+    // Profiles are handed to the sink in document order; manual imports may keep
+    // partial results, but subscription refreshes must require complete == true.
+    // Explicitly empty Clash proxies sequences are valid subscriptions.
+    ParseResult ParseDocument(QByteArray body, const ParseSink &sink);
+
+    ParseResult ParseText(const QString &text, const ParseSink &sink);
 }

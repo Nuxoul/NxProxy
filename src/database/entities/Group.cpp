@@ -3,6 +3,9 @@
 #include "include/database/ProfilesRepo.h"
 #include "include/global/Configs.hpp"
 
+#include <algorithm>
+#include <QHash>
+
 namespace Configs
 {
     void Group::clearCalculatedColumnWidth() {
@@ -32,85 +35,86 @@ namespace Configs
     }
 
     bool Group::SortProfiles(GroupSortAction sortAction) {
-        if (!mutex.tryLock()) {
-            return false;
+        QList<int> original;
+        testBy testOrder;
+        trafficBy trafficOrder;
+        {
+            if (!mutex.tryLock()) return false;
+            original = profiles;
+            testOrder = test_sort_by;
+            trafficOrder = traffic_sort_by;
+            mutex.unlock();
         }
-        auto allProfs = dataManager->profilesRepo->GetProfileBatch(profiles); // to warm up the cache
-        switch (sortAction.method) {
-            case GroupSortMethod::Raw: {
+        if (sortAction.method == GroupSortMethod::Raw || sortAction.method == GroupSortMethod::ById) return true;
+
+        // Never enter ProfilesRepo while holding the group lock. Snapshot all keys once,
+        // so the comparator neither nests locks nor observes changing profile objects.
+        struct SortKey {
+            QString text;
+            double number = 0;
+            quint64 traffic = 0;
+            int security = 0;
+            int latency = 0;
+        };
+        QHash<int, SortKey> keys;
+        const auto allProfs = dataManager->profilesRepo->GetProfileBatch(original);
+        for (const auto& profile : allProfs) {
+            if (profile == nullptr || profile->outbound == nullptr) continue;
+            SortKey key;
+            key.latency = profile->latency;
+            switch (sortAction.method) {
+            case GroupSortMethod::ByType: key.text = profile->outbound->DisplayType(); break;
+            case GroupSortMethod::ByName: key.text = profile->outbound->name; break;
+            case GroupSortMethod::ByAddress: key.text = profile->outbound->DisplayAddress(); break;
+            case GroupSortMethod::BySecurity: {
+                const auto security = profile->outbound->EffectiveSecurity();
+                key.security = static_cast<int>(security.level);
+                key.text = security.transport + security.label;
                 break;
             }
-            case GroupSortMethod::ById: {
-                break;
-            }
-            case GroupSortMethod::ByAddress:
-            case GroupSortMethod::ByName:
             case GroupSortMethod::ByTestResult:
-            case GroupSortMethod::ByTraffic:
-            case GroupSortMethod::BySecurity:
-            case GroupSortMethod::ByType: {
-                auto get_latency_for_sort = [](const std::shared_ptr<Profile>& prof) {
-                    auto i = prof->latency;
-                    if (i == 0) i = 100000;
-                    if (i < 0) i = 99999;
-                    return i;
-                };
-                std::ranges::sort(profiles,
-                                  [&](int a, int b) {
-                                      auto profA = dataManager->profilesRepo->GetProfile(a);
-                                      auto profB = dataManager->profilesRepo->GetProfile(b);
-                                      QString ms_a;
-                                      QString ms_b;
-                                      if (sortAction.method == GroupSortMethod::ByType) {
-                                          ms_a = profA->outbound->DisplayType();
-                                          ms_b = profB->outbound->DisplayType();
-                                      } else if (sortAction.method == GroupSortMethod::ByName) {
-                                          ms_a = profA->outbound->name;
-                                          ms_b = profB->outbound->name;
-                                      } else if (sortAction.method == GroupSortMethod::ByAddress) {
-                                          ms_a = profA->outbound->DisplayAddress();
-                                          ms_b = profB->outbound->DisplayAddress();
-                                      } else if (sortAction.method == GroupSortMethod::BySecurity) {
-                                          auto secA = profA->outbound->EffectiveSecurity();
-                                          auto secB = profB->outbound->EffectiveSecurity();
-                                          if (secA.level != secB.level) {
-                                              return sortAction.descending ? secA.level > secB.level
-                                                                           : secA.level < secB.level;
-                                          }
-                                          ms_a = secA.transport + secA.label;
-                                          ms_b = secB.transport + secB.label;
-                                      } else if (sortAction.method == GroupSortMethod::ByTestResult) {
-                                          if (test_sort_by == testBy::latency) {
-                                              return sortAction.descending ? get_latency_for_sort(profA) > get_latency_for_sort(profB) : get_latency_for_sort(profA) < get_latency_for_sort(profB);
-                                          }
-                                          if (test_sort_by == testBy::dlSpeed) {
-                                              return sortAction.descending ? bitrateToBps(profA->dl_speed) > bitrateToBps(profB->dl_speed) : bitrateToBps(profA->dl_speed) < bitrateToBps(profB->dl_speed);
-                                          }
-                                          if (test_sort_by == testBy::ulSpeed) {
-                                              return sortAction.descending ? bitrateToBps(profA->ul_speed) > bitrateToBps(profB->ul_speed) : bitrateToBps(profA->ul_speed) < bitrateToBps(profB->ul_speed);
-                                          }
-                                          if (test_sort_by == testBy::ipOut) {
-                                              return sortAction.descending ? profA->ip_out > profB->ip_out : profA->ip_out < profB->ip_out;
-                                          }
-                                      } else if (sortAction.method == GroupSortMethod::ByTraffic) {
-                                          if (traffic_sort_by == trafficBy::total) {
-                                              auto totalA = profA->traffic_downlink + profA->traffic_uplink;
-                                              auto totalB = profB->traffic_downlink + profB->traffic_uplink;
-                                              return sortAction.descending ? totalA > totalB  : totalA < totalB;
-                                          }
-                                          if (traffic_sort_by == trafficBy::dl) {
-                                              return sortAction.descending ? profA->traffic_downlink > profB->traffic_downlink : profA->traffic_downlink < profB->traffic_downlink;
-                                          }
-                                          if (traffic_sort_by == trafficBy::ul) {
-                                              return sortAction.descending ? profA->traffic_uplink > profB->traffic_uplink : profA->traffic_uplink < profB->traffic_uplink;
-                                          }
-                                      }
-                                      return sortAction.descending ? ms_a > ms_b : ms_a < ms_b;
-                                  });
+                switch (testOrder) {
+                case testBy::latency: key.number = key.latency == 0 ? 100000 : key.latency < 0 ? 99999 : key.latency; break;
+                case testBy::dlSpeed: key.number = bitrateToBps(profile->dl_speed); break;
+                case testBy::ulSpeed: key.number = bitrateToBps(profile->ul_speed); break;
+                case testBy::ipOut: key.text = profile->ip_out; break;
+                }
                 break;
+            case GroupSortMethod::ByTraffic:
+                switch (trafficOrder) {
+                case trafficBy::total: key.traffic = profile->traffic_downlink + profile->traffic_uplink; break;
+                case trafficBy::dl: key.traffic = profile->traffic_downlink; break;
+                case trafficBy::ul: key.traffic = profile->traffic_uplink; break;
+                }
+                break;
+            default: break;
             }
+            keys.insert(profile->id, key);
         }
-        mutex.unlock();
+        auto sorted = original;
+        std::stable_sort(sorted.begin(), sorted.end(), [&](int a, int b) {
+            const auto ka = keys.constFind(a), kb = keys.constFind(b);
+            if (ka == keys.cend() || kb == keys.cend()) return ka != keys.cend() && kb == keys.cend();
+            const auto compare = [&](const auto& left, const auto& right) {
+                return sortAction.descending ? left > right : left < right;
+            };
+            if (sortAction.method == GroupSortMethod::ByLatency) {
+                // Unknown, failed and connect-only verdicts never outrank a measured URL latency.
+                if ((ka->latency > 0) != (kb->latency > 0)) return ka->latency > 0;
+                if (ka->latency <= 0) return false;
+                return compare(ka->latency, kb->latency);
+            }
+            if (sortAction.method == GroupSortMethod::ByTraffic) return compare(ka->traffic, kb->traffic);
+            if (sortAction.method == GroupSortMethod::ByTestResult && testOrder != testBy::ipOut)
+                return compare(ka->number, kb->number);
+            if (sortAction.method == GroupSortMethod::BySecurity && ka->security != kb->security)
+                return compare(ka->security, kb->security);
+            return compare(ka->text, kb->text);
+        });
+        QMutexLocker locker(&mutex);
+        // A concurrent import/add/remove wins: do not replace it with our older snapshot.
+        if (profiles != original || test_sort_by != testOrder || traffic_sort_by != trafficOrder) return false;
+        profiles = std::move(sorted);
         return true;
     }
 
@@ -126,14 +130,12 @@ namespace Configs
     }
 
     bool Group::AddProfileBatch(const QList<int>& IDs) {
-        QSet<int> currentProfiles;
-        for (const auto& profileID : profiles) {
-            currentProfiles.insert(profileID);
-        }
         QMutexLocker locker(&mutex);
+        QSet<int> currentProfiles(profiles.cbegin(), profiles.cend());
         for (auto profileID : IDs) {
             if (!currentProfiles.contains(profileID)) {
                 profiles.append(profileID);
+                currentProfiles.insert(profileID);
             }
         }
         return true;

@@ -345,6 +345,7 @@ private:
     void setLogHighlighter(bool darkMode);
 
     void applyProfileFilters();
+    void attachProfilePage(QWidget* page);
     void refresh_selector_panel();
     void show_selector_members(int selectorId);
 

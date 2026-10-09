@@ -582,6 +582,14 @@ if (DASHBOARD_FILES)
             PROPERTY AUTORCC_OPTIONS "--compress-algo;zlib;--compress;9;--threshold;5")
 endif ()
 
+# An opt-in regression entry point uses the real application sources/repositories,
+# but never launches the core or touches the installed application's configuration.
+option(NKR_REVIEW_REGRESSION_TESTS "Build review regression entry point instead of the GUI main" OFF)
+if (NKR_REVIEW_REGRESSION_TESTS)
+    list(REMOVE_ITEM PROJECT_SOURCES src/main.cpp)
+    list(APPEND PROJECT_SOURCES tests/review_regressions.cpp)
+endif ()
+
 # Qt exe
 qt_add_executable(Throne
         MANUAL_FINALIZATION
@@ -662,5 +670,12 @@ target_link_libraries(Throne PRIVATE
         ${NKR_EXTERNAL_TARGETS}
         ${PLATFORM_LIBRARIES}
 )
+
+if (NKR_REVIEW_REGRESSION_TESTS)
+    set_target_properties(Throne PROPERTIES WIN32_EXECUTABLE FALSE)
+    enable_testing()
+    add_test(NAME review_regressions COMMAND Throne)
+    set_tests_properties(review_regressions PROPERTIES TIMEOUT 90 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif ()
 
 qt_finalize_executable(Throne)

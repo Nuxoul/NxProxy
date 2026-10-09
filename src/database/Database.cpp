@@ -195,29 +195,26 @@ namespace Configs {
             if (i > 0) sql += ",";
             sql += "(?,?,?,?,?,?,?,?,?,?,?,?,?)";
         }
-        try {
-            SQLite::Statement stmt(db, sql);
-            int idx = 1;
-            for (const auto& r : rows) {
-                stmt.bind(idx++, r.id);
-                stmt.bind(idx++, r.type);
-                stmt.bind(idx++, r.name);
-                stmt.bind(idx++, r.gid);
-                stmt.bind(idx++, r.latency);
-                stmt.bind(idx++, static_cast<int64_t>(r.latency_at));
-                stmt.bind(idx++, r.dl_speed);
-                stmt.bind(idx++, r.ul_speed);
-                stmt.bind(idx++, r.test_country);
-                stmt.bind(idx++, r.ip_out);
-                stmt.bind(idx++, r.outbound_json);
-                stmt.bind(idx++, static_cast<int64_t>(r.traffic_dl));
-                stmt.bind(idx++, static_cast<int64_t>(r.traffic_up));
-            }
-            stmt.exec();
-            maybeCheckpoint(static_cast<int>(rows.size()));
-        } catch (std::exception& e) {
-            NotifyError("execBatchInsertProfiles", e);
+        // Throw to the batch transaction owner; a failed chunk must roll back all rows.
+        SQLite::Statement stmt(db, sql);
+        int idx = 1;
+        for (const auto& r : rows) {
+            stmt.bind(idx++, r.id);
+            stmt.bind(idx++, r.type);
+            stmt.bind(idx++, r.name);
+            stmt.bind(idx++, r.gid);
+            stmt.bind(idx++, r.latency);
+            stmt.bind(idx++, static_cast<int64_t>(r.latency_at));
+            stmt.bind(idx++, r.dl_speed);
+            stmt.bind(idx++, r.ul_speed);
+            stmt.bind(idx++, r.test_country);
+            stmt.bind(idx++, r.ip_out);
+            stmt.bind(idx++, r.outbound_json);
+            stmt.bind(idx++, static_cast<int64_t>(r.traffic_dl));
+            stmt.bind(idx++, static_cast<int64_t>(r.traffic_up));
         }
+        stmt.exec();
+        maybeCheckpoint(static_cast<int>(rows.size()));
     }
 
     void Database::execBatchReplaceProfilesChunk(const std::vector<ProfileInsertRow>& rows) {
