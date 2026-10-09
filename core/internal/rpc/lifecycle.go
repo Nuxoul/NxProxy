@@ -2,7 +2,6 @@ package rpc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net/netip"
@@ -11,43 +10,63 @@ import (
 	"time"
 
 	"ThroneCore/gen"
+	"ThroneCore/internal/boxbox"
 	"ThroneCore/internal/boxmain"
 	"ThroneCore/internal/process"
 	"ThroneCore/internal/sysdns"
 	"ThroneCore/internal/xray"
+	"ThroneCore/internal/xraydns"
 
 	"github.com/google/shlex"
 	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/xtls/xray-core/core"
 )
 
-func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.ErrorResp, _ error) {
+func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (*gen.ErrorResp, error) {
+	return s.start(ctx, in, lifecycleDependencies{
+		startExtra:  (*process.Process).Start,
+		prepareXray: xrayPreparer,
+	})
+}
+
+// Dependencies are per attempt so fault tests need not mutate live global state.
+type lifecycleDependencies struct {
+	startExtra  func(*process.Process) error
+	prepareXray func(string, xraydns.BoxProvider) func(*core.Instance) error
+}
+
+func (s *server) start(ctx context.Context, in *gen.LoadConfigReq, deps lifecycleDependencies) (out *gen.ErrorResp, _ error) {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
 
+	// Reject before acquiring ownership: a rejected attempt must not unpublish the live instance.
+	if currentBox() != nil {
+		return &gen.ErrorResp{Error: To("instance already started")}, nil
+	}
+
 	var err error
+	var resources lifecycleResources
+	committed := false
 
 	defer func() {
+		if !committed {
+			resources.close()
+			autoRedirectMark.Store(0)
+		}
 		out = &gen.ErrorResp{}
 		if err != nil {
 			out.Error = To(err.Error())
-			setBoxInstance(nil, nil)
-			autoRedirectMark.Store(0)
 		}
 	}()
 
 	if debugLog {
-		log.Println("Start:", *in.CoreConfig)
+		log.Println("Start:", in.GetCoreConfig())
 		if in.XrayConfig != nil {
-			log.Println("Start Xray:", *in.XrayConfig)
+			log.Println("Start Xray:", in.GetXrayConfig())
 		}
 	}
 
-	if currentBox() != nil {
-		err = errors.New("instance already started")
-		return
-	}
-
-	if *in.NeedExtraProcess {
+	if in.GetNeedExtraProcess() {
 		args, e := shlex.Split(in.GetExtraProcessArgs())
 		if e != nil {
 			err = E.Cause(e, "Failed to parse args")
@@ -68,9 +87,9 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 			}
 		}
 
-		extraProcess = process.NewProcess(*in.ExtraProcessPath, args, *in.ExtraNoOut)
-		extraProcess.SetCleanupPath(extraCleanupPath)
-		err = extraProcess.Start()
+		resources.extra = process.NewProcess(in.GetExtraProcessPath(), args, in.GetExtraNoOut())
+		resources.extra.SetCleanupPath(extraCleanupPath)
+		err = deps.startExtra(resources.extra)
 		if err != nil {
 			return
 		}
@@ -80,34 +99,32 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 
 	// Filled in below, once boxmain.Create has built the box these sidecars resolve through.
 	var boxCtx boxContextHolder
-	prepareXray := xrayPreparer(in.GetXrayOutboundDnsStrategy(), boxCtx.get)
+	prepareXray := deps.prepareXray(in.GetXrayOutboundDnsStrategy(), boxCtx.get)
 
-	if *in.NeedXray {
+	if in.GetNeedXray() {
 		if in.GetXrayLazyStart() {
-			gate, e := xray.StartGate(*in.XrayConfig,
+			gate, e := xray.StartGate(in.GetXrayConfig(),
 				time.Duration(in.GetXrayIdleSeconds())*time.Second, prepareXray)
 			if e != nil {
 				err = e
 				return
 			}
-			setXray(nil, gate)
+			resources.gate = gate
 		} else {
-			instance, e := xray.CreateXrayInstance(*in.XrayConfig)
+			instance, e := xray.CreateXrayInstance(in.GetXrayConfig())
 			if e != nil {
 				err = e
 				return
 			}
+			resources.xray = instance
 			if e = prepareXray(instance); e != nil {
-				instance.Close()
 				err = e
 				return
 			}
 			if e = instance.Start(); e != nil {
-				instance.Close()
 				err = e
 				return
 			}
-			setXray(instance, nil)
 		}
 	}
 
@@ -115,47 +132,29 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 		gates, e := startXrayFullGates(fullConfigs,
 			time.Duration(in.GetXrayFullIdleSeconds())*time.Second, prepareXray)
 		if e != nil {
-			closeXray()
 			err = e
 			return
 		}
-		setXrayFullGates(gates)
+		resources.fullGates = gates
 	}
 
-	box, cancel, err := boxmain.Create([]byte(*in.CoreConfig), boxCtx.publish)
+	resources.box, resources.cancel, err = boxmain.Create([]byte(in.GetCoreConfig()), boxCtx.publish)
 	if err != nil {
-		if extraProcess != nil {
-			extraProcess.Stop()
-			extraProcess = nil
-		}
-		closeXray()
 		return
 	}
-	setBoxInstance(box, cancel)
+	box := resources.box
 
 	if runtime.GOOS == "darwin" && in.GetTunIpv4Cidr() != "" {
-		stopAllCores := func() {
-			box.CloseWithTimeout(cancel, time.Second*2, log.Println, true)
-			setBoxInstance(nil, nil)
-			if extraProcess != nil {
-				extraProcess.Stop()
-				extraProcess = nil
-			}
-			closeXray()
-		}
-
 		tunCIDR := in.GetTunIpv4Cidr()
 		tunPrefix, parseErr := netip.ParsePrefix(tunCIDR)
 		if parseErr != nil || !tunPrefix.Addr().Is4() {
 			err = fmt.Errorf("invalid tun_ipv4_cidr %q", tunCIDR)
-			stopAllCores()
 			return
 		}
 
 		tunDNS := tunPrefix.Addr()
 		if !tunDNS.IsValid() || !tunDNS.Is4() {
 			err = fmt.Errorf("got invalid DNS IP from tun_ipv4_cidr: %s", tunDNS)
-			stopAllCores()
 			return
 		}
 
@@ -170,53 +169,91 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (out *gen.Err
 		stopEgressForwardingWatch = watchEgressForwarding(box.Network())
 	}
 
+	// Publish only once the attempt has completed. The running lifecycle now owns these resources.
+	stateMu.Lock()
+	boxInstance, instanceCancel = resources.box, resources.cancel
+	xrayInstance, xrayGate, xrayFullGates = resources.xray, resources.gate, resources.fullGates
+	stateMu.Unlock()
+	extraProcess = resources.extra
+	committed = true
 	return
 }
 
-func (s *server) Stop(ctx context.Context, in *gen.EmptyReq) (out *gen.ErrorResp, _ error) {
+// Owned by one Start attempt or detached by Stop. Clearing each slot makes cleanup idempotent.
+type lifecycleResources struct {
+	box       *boxbox.Box
+	cancel    context.CancelFunc
+	extra     *process.Process
+	xray      *core.Instance
+	gate      *xray.Gate
+	fullGates []*xray.Gate
+}
+
+func (r *lifecycleResources) close() {
+	if r.box != nil {
+		box, cancel := r.box, r.cancel
+		r.box, r.cancel = nil, nil
+		box.CloseWithTimeout(cancel, time.Second*2, log.Println, true)
+	}
+	if r.cancel != nil {
+		cancel := r.cancel
+		r.cancel = nil
+		cancel()
+	}
+	if r.extra != nil {
+		extra := r.extra
+		r.extra = nil
+		extra.Stop()
+	}
+	if r.gate != nil {
+		gate := r.gate
+		r.gate = nil
+		gate.Close()
+	}
+	gates := r.fullGates
+	r.fullGates = nil
+	for _, gate := range gates {
+		gate.Close()
+	}
+	if r.xray != nil {
+		instance := r.xray
+		r.xray = nil
+		_ = instance.Close()
+	}
+}
+
+func (s *server) Stop(ctx context.Context, in *gen.EmptyReq) (*gen.ErrorResp, error) {
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
 
-	var err error
-
-	defer func() {
-		out = &gen.ErrorResp{}
-		if err != nil {
-			out.Error = To(err.Error())
-		}
-	}()
-
-	box, cancel := currentInstance()
-	if box == nil {
-		return
-	}
-
+	box, _ := currentInstance()
 	if stopEgressForwardingWatch != nil {
 		stopEgressForwardingWatch()
 		stopEgressForwardingWatch = nil
 	}
-
 	if needUnsetDNS {
 		needUnsetDNS = false
-		err := sysdns.SetSystemDNS("Empty", box.Network().InterfaceMonitor())
-		if err != nil {
-			log.Println("Failed to unset system DNS:", err)
+		if box != nil {
+			if err := sysdns.SetSystemDNS("Empty", box.Network().InterfaceMonitor()); err != nil {
+				log.Println("Failed to unset system DNS:", err)
+			}
 		}
 	}
-	// Unpublished first, so a poll mid-teardown sees no instance rather than a dying one.
-	setBoxInstance(nil, nil)
-	box.CloseWithTimeout(cancel, time.Second*2, log.Println, true)
-
-	if extraProcess != nil {
-		extraProcess.Stop()
-		extraProcess = nil
+	// Unpublish before closing so pollers cannot acquire dying instances, even if box is nil.
+	stateMu.Lock()
+	resources := lifecycleResources{
+		box: boxInstance, cancel: instanceCancel,
+		xray: xrayInstance, gate: xrayGate, fullGates: xrayFullGates,
+		extra: extraProcess,
 	}
-
-	closeXray()
-	// The Tun and its nftables rules went down with the box, so later test instances must not carry the exemption mark.
+	boxInstance, instanceCancel = nil, nil
+	xrayInstance, xrayGate, xrayFullGates = nil, nil, nil
+	stateMu.Unlock()
+	extraProcess = nil
+	resources.close()
+	// The Tun and its nftables rules went down with the box.
 	autoRedirectMark.Store(0)
-
-	return
+	return &gen.ErrorResp{}, nil
 }
 
 func (s *server) CheckConfig(ctx context.Context, in *gen.LoadConfigReq) (out *gen.ErrorResp, _ error) {
