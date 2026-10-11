@@ -34,7 +34,7 @@ namespace Configs
 
     class Group {
     public:
-        QMutex mutex;
+        mutable QMutex mutex;
         int id = -1;
         bool archive = false;
         bool skip_auto_update = false;

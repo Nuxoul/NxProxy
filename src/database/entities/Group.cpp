@@ -13,6 +13,7 @@ namespace Configs
     }
 
     QList<int> Group::Profiles() const {
+        QMutexLocker locker(&mutex);
         return profiles;
     }
 

@@ -407,7 +407,8 @@ void MainWindow::refresh_proxy_list_impl_refresh_data(const QList<int>& ids, boo
     if (!ids.isEmpty()) {
         for (auto id:ids) profilesTableModel->refreshProfileId(id);
     } else {
-        profilesTableModel->refreshTable(currentGroup->profiles, mayNeedReset);
+        const auto profileIDs = currentGroup->Profiles();
+        profilesTableModel->refreshTable(profileIDs, mayNeedReset);
     }
 }
 
@@ -507,7 +508,10 @@ void MainWindow::refresh_selector_panel()
     QList<int> selectorIds;
     // The row is pinned to the viewport width, so a long node name cannot widen the panel.
     const int rowWidth = qMax(160, ui->selectorGroupList->viewport()->width());
-    for (const int id : group->profiles) {
+    // Sorting replaces the group list on a worker. Hold only a value snapshot;
+    // release the group lock before any ProfilesRepo lookup or Qt row creation.
+    const auto profileIDs = group->Profiles();
+    for (const int id : profileIDs) {
         const auto profile = Configs::dataManager->profilesRepo->GetProfile(id);
         if (profile == nullptr || profile->type != "selector") continue;
         const auto selector = profile->Selector();
