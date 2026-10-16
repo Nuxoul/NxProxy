@@ -26,7 +26,8 @@ namespace API {
 
         // QString returns is error string
 
-        QString Start(bool *rpcOK, const libcore::LoadConfigReq &request);
+        QString Start(bool *rpcOK, const libcore::LoadConfigReq &request,
+                      bool* tunAdapterRetryable = nullptr, int timeoutMs = 0);
 
         QString Stop(bool *rpcOK);
 

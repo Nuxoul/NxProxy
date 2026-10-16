@@ -28,6 +28,7 @@
 #include "include/ui/profile/dialog_vpn_auth.h"
 
 #include "include/sys/Process.hpp"
+#include "include/sys/TunStartupRecovery.hpp"
 
 #include <algorithm>
 #include <memory>
@@ -292,20 +293,60 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
             req.extra_process_conf = result->extraCoreData->config.toStdString();
             req.extra_no_out = result->extraCoreData->noLog;
         }
-        bool rpcOK;
-        const QString error = defaultClient->Start(&rpcOK, req);
+        bool rpcOK = false;
+        QString error;
+        Configs_sys::CoreProcess::LaunchToken launchToken = 0;
+        QElapsedTimer recoveryClock;
+        recoveryClock.start();
+        const auto recovery = TunStartupRecovery::Run(
+            [&](int timeoutMs) {
+                { QMutexLocker lock(&coreProcessMutex);
+                  launchToken = core_process ? core_process->LaunchGeneration() : 0; }
+                bool retryable = false;
+                error = defaultClient->Start(&rpcOK, req, &retryable, timeoutMs);
+                return TunStartupRecovery::AttemptResult{rpcOK, !error.isEmpty(), retryable};
+            }, restartCurrent,
+            [&](int delayMs) {
+                return TunStartupRecovery::Wait(delayMs, restartCurrent,
+                    [](unsigned long ms) { return waitForBackgroundWork(ms); },
+                    [&] { return recoveryClock.elapsed(); });
+            }, [&] { return recoveryClock.elapsed(); },
+            [&](int attempt, int delayMs) {
+                MW_show_log(tr("[TUN] Adapter is not ready; rebuilding the configuration in %1 ms (attempt %2/%3).")
+                                .arg(delayMs).arg(attempt).arg(TunStartupRecovery::MaxAttempts));
+            });
+        if (rpcOK && error.isEmpty() && !recovery.cancelled && recovery.attempts > 1) {
+            MW_show_log(tr("[TUN] Adapter recovered automatically after %1 attempts.").arg(recovery.attempts));
+        }
+        if (recovery.exhausted) {
+            MW_show_log(tr("[TUN] Automatic recovery exhausted after %1 attempts: %2")
+                            .arg(recovery.attempts).arg(error));
+        }
         // Queued ahead of every dialog below, so none of them can be shown over the prompt.
         runOnUiThread([restartPrompt] { if (restartPrompt) restartPrompt->dismiss(); });
-        if (!rpcOK) return false;
-        if (!restartCurrent()) {
+        if (!rpcOK) {
+            if (recovery.attempts > 0) {
+                MW_show_log(tr("[TUN] Startup result is unknown; resetting this core without restoring the configuration."));
+                runOnThread([this, launchToken] {
+                    QMutexLocker lock(&coreProcessMutex);
+                    if (core_process) core_process->ResetUnconfirmedStart(launchToken);
+                }, DS_cores, true);
+            }
+            return false;
+        }
+        if (recovery.cancelled || !restartCurrent()) {
             // Start is atomic and cannot be forcibly cancelled. A stop during that
             // call may have found no published `running` profile, so unwind here.
             if (error.isEmpty()) { bool stopped = false; defaultClient->Stop(&stopped); }
             return false;
         }
         if (!error.isEmpty()) {
+            Configs_sys::CoreProcess::RestartToken rejectedToken = 0;
             { QMutexLocker lock(&coreProcessMutex);
-              if (core_process) core_process->NoteConfigurationRejected(ent->id, restartToken); }
+              if (core_process) {
+                  core_process->NoteConfigurationRejected(ent->id, restartToken);
+                  rejectedToken = core_process->RestartGeneration();
+              } }
             if (handleXrayGeoAssetError(error, ent->outbound->DisplayTypeAndName())) {
                 return false;
             }
@@ -321,7 +362,9 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
             }
             if (error.contains("configure tun interface")) {
                 runOnUiThread([=, this] {
-
+                    { QMutexLocker lock(&coreProcessMutex);
+                      if (Configs::dataManager->settingsRepo->prepare_exit || !core_process ||
+                          core_process->RestartGeneration() != rejectedToken) return; }
                     QMessageBox msg(
                         QMessageBox::Information,
                         tr("Tun device misbehaving"),
@@ -455,7 +498,8 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
     }
 
     const QPointer<RestartPrompt> restartPrompt =
-        new RestartPrompt(this, tr("If there is no response for a long time, it is recommended to restart the software."), 10000);
+        new RestartPrompt(this, tr("If there is no response for a long time, it is recommended to restart the software."),
+                          static_cast<int>(TunStartupRecovery::TotalBudgetMs) + 1000);
 
     runOnUiThread([this] {
         m_profileConnecting = true;

@@ -55,6 +55,8 @@ message EmptyResp {}
 
 message ErrorResp {
   optional string error = 1 [default = ""];
+  // Start only: failed attempt was reclaimed; Windows TUN adapter conflict may recover.
+  optional bool tun_adapter_retryable = 2 [default = false];
 }
 
 message LoadConfigReq {

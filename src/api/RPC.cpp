@@ -461,13 +461,16 @@ namespace API {
     *rpcOK = false; \
     MW_show_log(QString("IPC call failed (code %1)\n").arg(status));
 
-    QString Client::Start(bool *rpcOK, const libcore::LoadConfigReq &request) {
+    QString Client::Start(bool *rpcOK, const libcore::LoadConfigReq &request,
+                          bool* tunAdapterRetryable, int timeoutMs) {
+        if (tunAdapterRetryable) *tunAdapterRetryable = false;
         libcore::ErrorResp reply;
         std::vector<uint8_t> resp;
-        auto status = channel->Call("Start", spb::pb::serialize<std::string>(request), resp);
+        auto status = channel->Call("Start", spb::pb::serialize<std::string>(request), resp, timeoutMs);
 
         if (status == LocalSocketChannel::CallOK && tryDeserialize(resp, reply)) {
             *rpcOK = true;
+            if (tunAdapterRetryable) *tunAdapterRetryable = reply.tun_adapter_retryable.value_or(false);
             return QString::fromStdString(reply.error.value());
         } else {
             NOT_OK

@@ -31,6 +31,7 @@ func (s *server) Start(ctx context.Context, in *gen.LoadConfigReq) (*gen.ErrorRe
 
 // Dependencies are per attempt so fault tests need not mutate live global state.
 type lifecycleDependencies struct {
+	createBox   func([]byte, func(*boxbox.Box)) (*boxbox.Box, context.CancelFunc, error)
 	startExtra  func(*process.Process) error
 	prepareXray func(string, xraydns.BoxProvider) func(*core.Instance) error
 }
@@ -56,6 +57,11 @@ func (s *server) start(ctx context.Context, in *gen.LoadConfigReq, deps lifecycl
 		out = &gen.ErrorResp{}
 		if err != nil {
 			out.Error = To(err.Error())
+			// The failed box/sidecars have been reclaimed before retry is offered.
+			out.TunAdapterRetryable = To(retryableTunAdapterError(err))
+			if out.GetTunAdapterRetryable() {
+				log.Printf("[Tun recovery] Failed startup reclaimed; adapter creation conflict is retryable: %v", err)
+			}
 		}
 	}()
 
@@ -138,7 +144,13 @@ func (s *server) start(ctx context.Context, in *gen.LoadConfigReq, deps lifecycl
 		resources.fullGates = gates
 	}
 
-	resources.box, resources.cancel, err = boxmain.Create([]byte(in.GetCoreConfig()), boxCtx.publish)
+	createBox := deps.createBox
+	if createBox == nil {
+		createBox = func(config []byte, publish func(*boxbox.Box)) (*boxbox.Box, context.CancelFunc, error) {
+			return boxmain.Create(config, publish)
+		}
+	}
+	resources.box, resources.cancel, err = createBox([]byte(in.GetCoreConfig()), boxCtx.publish)
 	if err != nil {
 		return
 	}

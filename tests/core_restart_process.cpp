@@ -236,5 +236,38 @@ int main(int argc, char **argv) {
         process.Kill();
         CHECK(process.processId() == 0);
     }
+    reset();
+    {
+        CoreProcess process(executable, "isolated-unconfirmed-start", false);
+        childMode(process, "hold");
+        process.SetProfileToRestore(77);
+        process.Start();
+        CHECK(process.waitForStarted(2000));
+        const auto oldLaunch = process.LaunchGeneration();
+        CHECK(!process.ResetUnconfirmedStart(oldLaunch + 1));
+        CHECK(process.state() == QProcess::Running);
+        const bool resetConfirmed = process.ResetUnconfirmedStart(oldLaunch);
+        if (!resetConfirmed) process.Kill(); // Assertion failure must not leave a held child.
+        CHECK(resetConfirmed);
+        CHECK(process.waitForStarted(2000));
+        CHECK(process.LaunchGeneration() != oldLaunch);
+        CHECK(process.ConsumeProfileToRestore() == -1);
+        const auto newPid = process.processId();
+        CHECK(!process.ResetUnconfirmedStart(oldLaunch));
+        CHECK(process.processId() == newPid && process.state() == QProcess::Running);
+        bool stoppedDuringReset = false;
+        const auto stopConnection = QObject::connect(&process, &QProcess::stateChanged, &process,
+            [&](QProcess::ProcessState state) {
+                if (state == QProcess::NotRunning) {
+                    process.CancelAutomaticRestart();
+                    stoppedDuringReset = true;
+                }
+            });
+        CHECK(process.ResetUnconfirmedStart(process.LaunchGeneration()));
+        CHECK(stoppedDuringReset && process.state() == QProcess::NotRunning);
+        QObject::disconnect(stopConnection);
+        pump(200);
+        CHECK(process.processId() == 0);
+    }
     std::cout << "core restart production QProcess: " << checks << " checks passed, all children reaped\n";
 }

@@ -1,6 +1,7 @@
 // Standalone real-QLocalSocket regression (no GUI main or running core).
 // Compile this TU plus the normally generated libcore.pb.cc / myproto library.
 #include "src/api/RPC.cpp"
+#include "include/sys/TunStartupRecovery.hpp"
 #include <QCoreApplication>
 #include <QLocalServer>
 #include <QUuid>
@@ -14,7 +15,7 @@ void require(bool ok, const char *what) { if (!ok) throw std::runtime_error(what
 struct Peer {
     QString name = "throne-rpc-test-" + QUuid::createUuid().toString(QUuid::Id128);
     std::atomic<bool> stop{false}, legacy{false}, oversized{false}, hold{false};
-    std::atomic<int> tests{0}, cancels{0};
+    std::atomic<int> tests{0}, cancels{0}, starts{0};
     std::promise<void> listening;
     std::thread worker;
     Peer() : worker([this]() { run(); }) { listening.get_future().wait(); }
@@ -61,6 +62,14 @@ struct Peer {
                             cap.cancelable_methods = {"Test", "CaptureDiagnostics"};
                             respond(id, 0, spb::pb::serialize<std::string>(cap));
                         }
+                    } else if (method == "Start") {
+                        const int attempt = ++starts;
+                        libcore::ErrorResp reply;
+                        if (legacy || attempt == 1) {
+                            reply.error = "synthetic TUN adapter conflict";
+                            if (!legacy) reply.tun_adapter_retryable = true;
+                        }
+                        respond(id, 0, spb::pb::serialize<std::string>(reply));
                     } else if (method == "Test") {
                         ++tests;
                         if (oversized) {
@@ -107,6 +116,15 @@ int main(int argc, char **argv) {
         API::Client client;
         peer.connect(client);
         bool ok = false;
+        bool retryable = false;
+        QString startError;
+        std::int64_t now = 0;
+        const auto recovered = TunStartupRecovery::Run([&](int timeout) {
+            startError = client.Start(&ok, {}, &retryable, timeout);
+            return TunStartupRecovery::AttemptResult{ok, !startError.isEmpty(), retryable};
+        }, [] { return true; }, [&](int ms) { now += ms; return true; }, [&] { return now; }, [](int, int) {});
+        require(ok && startError.isEmpty() && !retryable && recovered.attempts == 2 && peer.starts == 2,
+                "real Start RPC did not recover typed adapter response");
         client.Test(&ok, {}, nullptr, 2000);
         require(ok, "fragmented response failed");
         peer.hold = true;
@@ -152,12 +170,15 @@ int main(int argc, char **argv) {
         peer.legacy = true;
         peer.connect(client);
         require(!client.Capabilities().cancel_request.value_or(false), "legacy retained stale capabilities");
+        retryable = true;
+        startError = client.Start(&ok, {}, &retryable, 2000);
+        require(ok && !startError.isEmpty() && !retryable, "old core Start defaulted recovery flag to true");
         peer.hold = true;
         const auto legacyCancels = peer.cancels.load();
         client.Test(&ok, {}, nullptr, 40);
         client.StopTests(&ok); require(ok, "legacy stop fallback failed");
         require(peer.cancels == legacyCancels, "CancelRequest sent to old core");
-        std::cout << "PASS: fragmented/oversize/busy/control/timeout/cancel/late/reconnect/legacy QLocalSocket\n";
+        std::cout << "PASS: Start recovery/old-field fallback + fragmented/oversize/busy/control/timeout/cancel/late/reconnect/legacy QLocalSocket\n";
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "FAIL: " << error.what() << '\n';

@@ -52,19 +52,19 @@ void StartStopButton::setMode(Mode m) {
 }
 
 void StartStopButton::applyState(bool animated) {
-    const bool interactive = (m_state == State::Idle || m_state == State::Running);
+    const bool interactive = (m_state == State::Idle || m_state == State::Connecting || m_state == State::Running);
     setEnabled(interactive);
     setCursor(interactive ? Qt::PointingHandCursor : Qt::ArrowCursor);
 
     switch (m_state) {
         case State::Disabled: setToolTip(tr("Select a profile to start")); break;
         case State::Idle: setToolTip(tr("Start")); break;
-        case State::Connecting: setToolTip(tr("Connecting…")); break;
+        case State::Connecting: setToolTip(tr("Cancel connection")); break;
         case State::Running: setToolTip(tr("Stop")); break;
         case State::Disconnecting: setToolTip(tr("Stopping…")); break;
     }
 
-    const qreal morphTarget = (m_state == State::Running || m_state == State::Disconnecting) ? 1.0 : 0.0;
+    const qreal morphTarget = (m_state == State::Connecting || m_state == State::Running || m_state == State::Disconnecting) ? 1.0 : 0.0;
     const qreal dimTarget = (m_state == State::Disabled) ? 0.45 : 1.0;
     const QColor ringTarget = targetRingColor();
 
@@ -183,7 +183,7 @@ void StartStopButton::ensureChromeCache() {
     opt.subControls &= ~QStyle::SC_ToolButtonMenu;
     opt.arrowType = Qt::NoArrow;
     if (m_state == State::Connecting || m_state == State::Disconnecting) {
-        // Force the frame to look enabled: a transition is not clickable but must not look dead.
+        // A disconnect transition remains non-clickable but must not look dead.
         opt.state |= QStyle::State_Enabled;
         opt.state &= ~QStyle::State_Sunken;
     }

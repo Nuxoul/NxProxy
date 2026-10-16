@@ -260,6 +260,8 @@ void testPages() {
 #include "background_regressions.hpp"
 #include "connection_regressions.hpp"
 #include "selector_panel_regressions.hpp"
+#include "tun_recovery_cases.hpp"
+#include "tun_recovery_qt.hpp"
 int main(int argc,char** argv){
     QApplication app(argc,argv);app.setQuitOnLastWindowClosed(false);
     QTemporaryDir dir;require(dir.isValid(),"temporary database dir");QDir::setCurrent(dir.path());
@@ -268,7 +270,7 @@ int main(int argc,char** argv){
     Configs::dataManager->settingsRepo->started_id=Configs::NoProfileId;
     QTimer dismiss;QObject::connect(&dismiss,&QTimer::timeout,[]{for(auto* w:QApplication::topLevelWidgets()) if(auto* box=qobject_cast<QMessageBox*>(w)) box->done(QMessageBox::Ok);});dismiss.start(5);
     int exit=0;
-    try{testParsingAndRefresh();testSortingAndConcurrency();testCleanupAndPersistence();testNarrowTestResults();testPages();runConnectionRegressions();runSelectorPanelRegressions();runBackgroundRegressions();std::cout<<"ALL REVIEW REGRESSIONS PASSED\n";}
+    try{testParsingAndRefresh();testSortingAndConcurrency();testCleanupAndPersistence();testNarrowTestResults();testPages();runConnectionRegressions();runSelectorPanelRegressions();runTunRecoveryCases();runTunRecoveryQt();runBackgroundRegressions();std::cout<<"ALL REVIEW REGRESSIONS PASSED\n";}
     catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<"\n";exit=1;}
     pump(50);delete Configs::dataManager;Configs::dataManager=nullptr;return exit;
 }

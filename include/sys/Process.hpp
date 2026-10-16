@@ -22,6 +22,11 @@ namespace Configs_sys {
         void Start();
         void Kill();
         void Restart();
+        // Owner-thread reset for a Start RPC with unknown completion. Never act on
+        // a newer core process, and never restore the timed-out configuration.
+        using LaunchToken = std::uint64_t;
+        LaunchToken LaunchGeneration() const { return m_launchGeneration.load(); }
+        bool ResetUnconfirmedStart(LaunchToken token);
 
         // Thread-safe; call synchronously at manual stop/exit, before any early return.
         // Also call before an explicit user start (including restarting the same profile).
@@ -47,6 +52,7 @@ namespace Configs_sys {
         QString m_socketName;
         bool m_debugMode = false;
         bool m_suppressExit = false;
+        std::atomic<LaunchToken> m_launchGeneration{0};
         CoreRestartIntent m_restartIntent;
         CoreRestartPolicy m_restartPolicy;
         RestartToken m_policyGeneration = 1;

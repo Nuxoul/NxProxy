@@ -7486,6 +7486,22 @@ Error: %1</source>
         <source>[%1] speed test error: %2</source>
         <translation>[%1] 速度测试错误：%2</translation>
     </message>
+    <message>
+        <source>[TUN] Adapter is not ready; rebuilding the configuration in %1 ms (attempt %2/%3).</source>
+        <translation>[TUN] 适配器尚未就绪，%1 毫秒后自动重建配置（第 %2/%3 次尝试）。</translation>
+    </message>
+    <message>
+        <source>[TUN] Adapter recovered automatically after %1 attempts.</source>
+        <translation>[TUN] 适配器已在 %1 次尝试后自动恢复。</translation>
+    </message>
+    <message>
+        <source>[TUN] Automatic recovery exhausted after %1 attempts: %2</source>
+        <translation>[TUN] 自动恢复在 %1 次尝试后仍失败：%2</translation>
+    </message>
+    <message>
+        <source>[TUN] Startup result is unknown; resetting this core without restoring the configuration.</source>
+        <translation>[TUN] 启动结果未确认，正在重置本次核心，不自动恢复配置。</translation>
+    </message>
 </context>
 <context>
     <name>OtpItem</name>
@@ -9312,6 +9328,10 @@ Remove that endpoint from this routing profile as well?</source>
     <message>
         <source>Stopping…</source>
         <translation>正在停止…</translation>
+    </message>
+    <message>
+        <source>Cancel connection</source>
+        <translation>取消连接</translation>
     </message>
 </context>
 <context>

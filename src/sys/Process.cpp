@@ -112,6 +112,20 @@ namespace Configs_sys {
         StopProcess(1000);
     }
 
+    bool CoreProcess::ResetUnconfirmedStart(LaunchToken token) {
+        if (token == 0 || m_launchGeneration.load() != token) return false;
+        const auto cancelled = m_restartIntent.Cancel();
+        start_profile_when_core_is_up.store(-1);
+        m_restoreGeneration.store(0);
+        SyncRestartPolicy(cancelled);
+        if (!StopProcess(1000)) return false;
+        // A newer stop/exit during process teardown wins; never revive its profile.
+        if (m_launchGeneration.load() != token || m_restartIntent.Snapshot() != cancelled ||
+            Configs::dataManager->settingsRepo->prepare_exit) return true;
+        Start(); // Idle core only. The unconfirmed configuration is not restored.
+        return true;
+    }
+
     CoreProcess::CoreProcess(const QString &core_path, const QString &socketName, bool debugMode)
         : m_socketName(socketName), m_debugMode(debugMode) {
         program = core_path;
@@ -213,6 +227,7 @@ namespace Configs_sys {
         // Points Xray's asset loader at our writable config dir, so a geoip.dat/geosite.dat downloaded later is found with no core restart.
         env.insert("XRAY_LOCATION_ASSET", Configs::GetBasePath());
         setProcessEnvironment(env);
+        m_launchGeneration.fetch_add(1);
         start(program, arguments);
     }
 

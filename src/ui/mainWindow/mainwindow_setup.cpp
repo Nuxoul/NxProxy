@@ -266,7 +266,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(ui->menu_start, &QAction::triggered, this, [=,this]() { profile_start(); });
     connect(ui->menu_stop, &QAction::triggered, this, [=,this]() { profile_stop(false, false, true); });
     connect(ui->toolButton_startstop, &QAbstractButton::clicked, this, [=,this]() {
-        if (running != nullptr) profile_stop(false, false, true);
+        if (m_profileConnecting || running != nullptr) profile_stop(false, false, true);
         else profile_start();
     });
     connect(ui->tabWidget->tabBar(), &QTabBar::tabMoved, this, [=,this](int from, int to) {
