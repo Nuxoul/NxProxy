@@ -310,7 +310,7 @@ void MainWindow::dialog_message_impl(MwMessage cmd, const QStringList &args) {
         if (changed(MwArg::Vpn) && settings->spmode_vpn) {
             MessageBoxWarning(tr("Tun Settings changed"), tr("Restart Tun to take effect."));
         }
-        if (changed(MwArg::ChoosePort) || suggestRestartProxy) {
+        if (changed(MwArg::ChoosePort) || changed(MwArg::Route) || suggestRestartProxy) {
             noteRestartNeeded(changed(MwArg::Route) ? tr("Routing") : tr("Settings"));
         }
         refresh_status();

@@ -1,4 +1,5 @@
 #include "include/ui/mainwindow.h"
+#include "include/configs/generate.h"
 #include "NkrVersion.h"
 
 #include <QApplication>
@@ -146,6 +147,22 @@ void MainWindow::applyProfileFilters()
     refresh_proxy_list_column_size();
 }
 
+QString MainWindow::routingModeStatus() const {
+    const auto saved = Configs::dataManager->settingsRepo->GetRoutingIntent();
+    auto label = [this](const Configs::RoutingIntent& intent) {
+        return intent.mode == Configs::RoutingMode::GlobalProxy
+            ? tr("Global Proxy — %1").arg(Configs::GlobalOutboundLabel(intent.targetID)) : tr("Rule");
+    };
+    QString status;
+    if (running && m_appliedRoutingIntent) status = tr("Active: %1").arg(label(*m_appliedRoutingIntent));
+    else status = tr("Stopped");
+    if (m_profileConnecting || m_profileDisconnecting) status += tr(" · Applying: %1").arg(label(saved));
+    else if (!m_routingApplyError.isEmpty()) status += tr(" · Apply failed; saved: %1").arg(label(saved));
+    else if (!m_appliedRoutingIntent || *m_appliedRoutingIntent != saved) status += tr(" · Next start: %1").arg(label(saved));
+    if (!saved.valid) status += tr(" · Invalid saved routing mode");
+    return status;
+}
+
 void MainWindow::refresh_status(const QString &traffic_update) {
     const auto* settings = Configs::dataManager->settingsRepo.get();
 
@@ -192,6 +209,7 @@ void MainWindow::refresh_status(const QString &traffic_update) {
         } else {
             runningLabelText = tr("Not Running");
         }
+        runningLabelText += "\n" + routingModeStatus();
         ui->label_running->setText(runningLabelText);
     }
     const auto inbound_disabled = settings->disable_mixed_inbound;
@@ -212,7 +230,10 @@ void MainWindow::refresh_status(const QString &traffic_update) {
         ui->label_running->setText(tr("Select") + " *");
         ui->label_running->setToolTip(tr("Select mode, double-click or press Enter to select a profile, press ESC to exit."));
     } else {
-        ui->label_running->setToolTip({});
+        QString details = routingModeStatus();
+        if (!m_routingApplyError.isEmpty()) details += "\n" + m_routingApplyError;
+        if (settings->use_dns_object) details += "\n" + tr("Custom DNS is user-managed; it is not changed by routing mode.");
+        ui->label_running->setToolTip(details);
     }
 
     const auto route = Configs::dataManager->routesRepo->GetRouteProfile(settings->current_route_id);
@@ -229,6 +250,7 @@ void MainWindow::refresh_status(const QString &traffic_update) {
             return title;
         }
         QStringList tt;
+        tt << routingModeStatus();
         if (Configs::IsAdmin()) tt << "[" + tr("Admin") + "]";
         if (select_mode) tt << "[" + tr("Select") + "]";
         if (!title_error.isEmpty()) tt << "[" + title_error + "]";

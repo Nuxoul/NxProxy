@@ -197,6 +197,11 @@ namespace Configs {
             bool proxyUsesXray = false;
             std::shared_ptr<Profile> ent = std::make_shared<Profile>(nullptr, nullptr);
             BuildPrerequisites prerequisites;
+            RoutingSnapshot routingSnapshot;
+            std::shared_ptr<RouteProfile> effectiveRoute;
+            RoutingIntent routingIntent;
+            QString effectiveProxyTag = tags::proxy;
+            bool globalProxy() const { return !forTest && routingIntent.mode == RoutingMode::GlobalProxy; }
             osType os = getOS();
 
             QString error;
@@ -557,9 +562,30 @@ namespace Configs {
 #endif
             auto &preReqs = ctx.prerequisites;
 
-            auto routeChain = dataManager->routesRepo->GetRouteProfile(settings.current_route_id);
+            ctx.routingSnapshot = dataManager->routesRepo->GetRoutingSnapshot(settings.current_route_id, &ctx.error);
+            if (ctx.globalProxy() && ctx.routingSnapshot.profile) {
+                const auto& base = ctx.routingSnapshot.profile;
+                if (base->isRaw || base->preventModifications) {
+                    ctx.error = QObject::tr("Global Proxy requires an editable structured routing profile. Switch to Rule for raw or locked routing.");
+                    return;
+                }
+                const auto target = getProfile(ctx.routingIntent.targetID);
+                if (!IsGlobalOutboundSupported(target)) {
+                    ctx.error = QObject::tr("The saved global outbound is missing or unsupported. Choose a strategy group or proxy node in Routing > Global Outbound.");
+                    return;
+                }
+                ctx.effectiveRoute = std::make_shared<RouteProfile>(*base);
+                ctx.effectiveRoute->Rules.clear();
+                ctx.effectiveRoute->defaultOutboundID = target->id;
+                // Inactive business endpoint rules do not start unrelated VPN resources.
+                ctx.effectiveRoute->endpointProfileIDs.clear();
+                ctx.effectiveRoute->innerHopEndpointIDs.clear();
+            } else {
+                ctx.effectiveRoute = ctx.routingSnapshot.profile;
+            }
+            auto routeChain = ctx.globalProxy() ? ctx.effectiveRoute : ctx.routingSnapshot.EffectiveProfile();
             if (routeChain == nullptr) {
-                ctx.error = "Routing profile does not exist, try resetting the route profile in Routing Settings";
+                if (ctx.error.isEmpty()) ctx.error = "Routing profile does not exist, try resetting the route profile in Routing Settings";
                 return;
             }
             // A verbatim raw profile takes no twins, and an unreachable bridge still starts a tun.
@@ -608,7 +634,8 @@ namespace Configs {
                         if (member == nullptr || member->outbound == nullptr || member->gid != neededEnt->gid
                             || memberID == neededEnt->id || member->type == "selector" || member->type == "autoselector"
                             || member->type == "chain" || member->type == "direct" || member->type == "extracore"
-                            || isCustomFullConfig(member) || isXrayFullConfig(member) || selectorGroup.members.contains(memberID)) continue;
+                            || isCustomFullConfig(member) || isXrayFullConfig(member) || selectorGroup.members.contains(memberID)
+                            || (ctx.globalProxy() && !IsGlobalOutboundSupported(member))) continue;
                         selectorGroup.members.append(memberID);
                         selectorGroup.memberTags.append(hopTag(tags::routeChainPrefix, suffix));
                         preReqs.routing.routeOutboundGroups << RoutingDeps::RouteOutboundGroup{
@@ -661,6 +688,11 @@ namespace Configs {
                     preReqs.routing.outboundMap[item] = hopTag(tags::routeChainPrefix, suffix++);
                     preReqs.routing.routeOutboundGroups << RoutingDeps::RouteOutboundGroup{QList<int>{item}, nullptr};
                 }
+            }
+
+            if (ctx.globalProxy()) {
+                ctx.effectiveProxyTag = preReqs.routing.outboundMap.at(ctx.routingIntent.targetID);
+                ctx.result->effectiveProxyTag = ctx.effectiveProxyTag;
             }
 
             if (!routeChain->endpointProfileIDs.isEmpty()) {
@@ -744,13 +776,13 @@ namespace Configs {
                 preReqs.routing.neededRuleSets << item;
             }
 
-            if (settings.enable_dns_routing) {
-                auto sets = routeChain->get_direct_sites();
+            if (settings.enable_dns_routing && !ctx.globalProxy()) {
+                auto sets = ctx.routingSnapshot.profile->get_direct_sites();
                 parseSelectorList(sets, sinkFor(preReqs.dns.direct));
                 if (!sets.isEmpty()) preReqs.dns.needDirectDnsRules = true;
 
                 // With a direct final DNS these need an explicit remote-DNS carve-out.
-                auto proxySets = routeChain->get_proxy_sites();
+                auto proxySets = ctx.routingSnapshot.profile->get_proxy_sites();
                 parseSelectorList(proxySets, sinkFor(preReqs.dns.proxy));
                 if (!proxySets.isEmpty()) preReqs.dns.needProxyDnsRules = true;
             }
@@ -820,7 +852,7 @@ namespace Configs {
                 {"server", settings.ntp_server_address},
                 {"server_port", settings.ntp_server_port},
                 {"interval", settings.ntp_interval},
-                {"detour", (settings.ntp_outbound == tags::proxy && !ctx.forTest) ? tags::proxy : tags::direct},
+                {"detour", (settings.ntp_outbound == tags::proxy && !ctx.forTest) ? ctx.effectiveProxyTag : QString(tags::direct)},
             };
         }
 
@@ -925,7 +957,7 @@ namespace Configs {
 
             const auto &dns = ctx.prerequisites.dns;
             const auto &hijack = ctx.prerequisites.hijack;
-            bool isTailscale = ctx.ent->type == "tailscale";
+            bool isTailscale = !ctx.globalProxy() && ctx.ent->type == "tailscale";
             bool independentCache = false;
             QJsonArray servers;
             QJsonArray rules;
@@ -939,7 +971,7 @@ namespace Configs {
                 }
                 remoteDnsObj["tag"] = tags::dnsRemote;
                 remoteDnsObj["domain_resolver"] = tags::dnsLocal;
-                remoteDnsObj["detour"] = tags::proxy;
+                remoteDnsObj["detour"] = ctx.effectiveProxyTag;
                 servers += remoteDnsObj;
 
                 if (isTailscale)
@@ -1038,7 +1070,7 @@ namespace Configs {
                         {"type", it.value()},
                         {"endpoint", it.key()},
                     };
-                    if (it.key() == ctx.vpnStrictTag) {
+                    if (!ctx.globalProxy() && it.key() == ctx.vpnStrictTag) {
                         server["accept_default_resolvers"] = true;
                         server["accept_search_domain"] = true;
                         remoteDnsTag = dnsTag;
@@ -1095,6 +1127,32 @@ namespace Configs {
             }
 
 
+            // Explicit FakeIP exclusions retain real answers even for a local proxy override.
+            if (settings.fake_dns && ctx.tunEnabled) {
+                DomainSelectors fakeExclude;
+                parseSelectorList(settings.fakeip_exclude, sinkFor(fakeExclude));
+                appendDnsRoutingRules(rules, fakeExclude, tags::dnsDirect, settings.direct_dns_disable_ipv6);
+            }
+            if (!ctx.forTest && !ctx.globalProxy() && ctx.routingSnapshot.profile && !ctx.routingSnapshot.profile->isRaw) {
+                for (const auto& entry : ctx.routingSnapshot.local) {
+                    if (entry.kind != "domain" && entry.kind != "suffix") continue;
+                    QJsonObject condition{{entry.kind == "domain" ? "domain" : "domain_suffix", QJsonArray{entry.value}}};
+                    if (entry.action == block) {
+                        condition["action"] = "reject";
+                        rules.append(condition);
+                    } else if (entry.action == bypass) {
+                        appendDnsRoute(rules, condition, tags::dnsDirect, settings.direct_dns_disable_ipv6);
+                    } else {
+                        if (settings.fake_dns && ctx.tunEnabled) {
+                            auto fake = condition;
+                            fake["query_type"] = QJsonArray{"A", "AAAA"};
+                            fake["action"] = "route"; fake["server"] = tags::dnsFake;
+                            rules.append(fake);
+                        }
+                        appendDnsRoute(rules, condition, remoteDnsTag, settings.remote_dns_disable_ipv6);
+                    }
+                }
+            }
             if (dns.needDirectDnsRules) {
                 appendDnsRoutingRules(rules, dns.direct, tags::dnsDirect, settings.direct_dns_disable_ipv6);
             }
@@ -1106,10 +1164,6 @@ namespace Configs {
             // addresses and would otherwise defeat the point of handing the domain to the exit.
             if (settings.fake_dns && ctx.tunEnabled) {
                 // LAN, Windows probes, NTP, Xbox, STUN: these have to keep their real address.
-                DomainSelectors fakeExclude;
-                parseSelectorList(settings.fakeip_exclude, sinkFor(fakeExclude));
-                appendDnsRoutingRules(rules, fakeExclude, tags::dnsDirect, settings.direct_dns_disable_ipv6);
-
                 QJsonObject fakeServer{
                         {"tag", tags::dnsFake},
                         {"type", "fakeip"},
@@ -1130,7 +1184,7 @@ namespace Configs {
             }
 
             // A test box builds no dns-remote server at all, so its fall-through goes out direct.
-            const bool useDirectFinalDNS = ctx.forTest || settings.dns_final_out == tags::direct;
+            const bool useDirectFinalDNS = ctx.forTest || (!ctx.globalProxy() && settings.dns_final_out == tags::direct);
 
             if (!ctx.forTest && dns.needProxyDnsRules && useDirectFinalDNS) {
                 appendDnsRoutingRules(rules, dns.proxy, remoteDnsTag, settings.remote_dns_disable_ipv6);
@@ -1235,10 +1289,18 @@ namespace Configs {
                 for (const int endpointID : [&] {
                          QList<int> ids;
                          const auto group = dataManager->groupsRepo->GetGroup(ctx.ent->gid);
-                         if (group == nullptr) return ids;
-                         ids = group->profiles;
-                         if (group->front_proxy_id >= 0) ids << group->front_proxy_id;
-                         if (group->landing_proxy_id >= 0) ids << group->landing_proxy_id;
+                         // Retain the historical group exclusion scope, but also cover
+                         // every actually planned cross-group route/selector/aux hop.
+                         if (group != nullptr) {
+                             ids = group->Profiles();
+                             if (group->front_proxy_id >= 0) ids << group->front_proxy_id;
+                             if (group->landing_proxy_id >= 0) ids << group->landing_proxy_id;
+                         }
+                         ids.append(unwrapChain(ctx.ent->id));
+                         for (const auto& planned : ctx.prerequisites.routing.routeOutboundGroups)
+                             ids.append(planned.hopIDs);
+                         for (const auto& planned : ctx.prerequisites.routing.auxEndpointGroups)
+                             ids.append(planned.hopIDs);
                          return ids;
                      }())
                 {
@@ -2148,12 +2210,11 @@ namespace Configs {
 
         void buildRouteSection(BuildContext &ctx) {
             const auto &settings = *dataManager->settingsRepo;
-            auto routeChain = dataManager->routesRepo->GetRouteProfile(settings.current_route_id);
+            auto routeChain = ctx.effectiveRoute;
             if (routeChain == nullptr) {
-                ctx.error = "Routing profile does not exist, try resetting the route profile in Routing Settings";
+                ctx.error = "Routing snapshot is missing";
                 return;
             }
-            routeChain = std::make_shared<RouteProfile>(*routeChain);
             const auto &routeDeps = ctx.prerequisites.routing;
 
             QJsonObject rawRouteObj;
@@ -2220,7 +2281,18 @@ namespace Configs {
 
             auto profileRules = routeChain->isRaw ? rawRouteObj.value("rules").toArray()
                                                   : routeChain->get_route_rules(false, routeDeps.outboundMap);
-            if (ctx.l3Bridge) profileRules = withL3BridgeTwins(profileRules);
+            QJsonArray localRules;
+            if (!ctx.forTest && !ctx.globalProxy() && !routeChain->isRaw) {
+                for (const auto& entry : ctx.routingSnapshot.local) {
+                    auto rule = entry.ToRule();
+                    const auto tag = routeDeps.outboundMap.find(rule->outboundID);
+                    localRules.append(rule->get_rule_json(false, tag == routeDeps.outboundMap.end() ? QString{} : tag->second));
+                }
+            }
+            if (ctx.l3Bridge) {
+                localRules = withL3BridgeTwins(localRules);
+                profileRules = withL3BridgeTwins(profileRules);
+            }
 
             QJsonObject extraCoreDirect;
             if (!ctx.result->extraCoreData->path.isEmpty())
@@ -2337,6 +2409,7 @@ namespace Configs {
                 }
                 routeRules.append(stunRule);
             }
+            for (const auto& r : localRules) routeRules.append(r);
             for (const auto& r : profileRules) routeRules.append(r);
             for (const auto& r : vpnAuxRules) routeRules.append(r);
             for (const auto& r : l3BridgeFinalRules) routeRules.append(r);
@@ -2543,10 +2616,19 @@ namespace Configs {
 
     std::shared_ptr<BuildConfigResult> BuildSingBoxConfig(const std::shared_ptr<Profile>& ent,
                                                        const BuildConfigOptions& options) {
+        const RoutingIntent intent = dataManager->settingsRepo->GetRoutingIntent();
+        if (!intent.valid || (intent.mode == RoutingMode::GlobalProxy &&
+            (isCustomFullConfig(ent) || isXrayFullConfig(ent) || resolveExtraCoreProfile(ent) != nullptr))) {
+            auto result = std::make_shared<BuildConfigResult>();
+            result->routingIntent = intent;
+            result->error = QObject::tr("Global Proxy cannot transform a full configuration, or the saved routing mode is invalid. Select Rule or a supported structured setup.");
+            return result;
+        }
         if (ent->type == "custom")
         {
             auto res = std::make_shared<BuildConfigResult>();
             res->involvedProfiles = {ent->id};
+            res->routingIntent = intent;
             auto custom = ent->Custom();
             if (custom == nullptr)
             {
@@ -2578,6 +2660,9 @@ namespace Configs {
 
         BuildContext ctx;
         ctx.shareSelectorOutbounds = options.shareSelectorOutbounds;
+        ctx.routingIntent = intent;
+        ctx.result->routingIntent = intent;
+        ctx.result->effectiveProxyTag = tags::proxy;
         ctx.ent = ent;
         ctx.result->involvedProfiles = {ent->id};
         buildProfileSink = &ctx.result->involvedProfiles;
@@ -2619,6 +2704,48 @@ namespace Configs {
         if (failed()) return ctx.result;
 
         return ctx.result;
+    }
+
+    bool IsGlobalOutboundSupported(const std::shared_ptr<Profile>& ent) {
+        if (!ent || !ent->outbound || ent->outbound->invalid) return false;
+        const auto group = dataManager->groupsRepo->GetGroup(ent->gid);
+        if (!group || group->archive) return false;
+        if (ent->type == "selector") {
+            const auto selector = ent->Selector();
+            if (!selector) return false;
+            for (int id : selector->members) {
+                const auto member = dataManager->profilesRepo->GetProfile(id);
+                if (member && member->type != "selector" && member->gid == ent->gid && IsGlobalOutboundSupported(member)) return true;
+            }
+            return false;
+        }
+        // Only ordinary routed nodes; arbitrary custom JSON and endpoint/extra-core resources are not mode targets.
+        static const QSet<QString> excluded{"direct", "block", "chain", "autoselector", "custom", "extracore"};
+        return !excluded.contains(ent->type) && !ent->outbound->IsEndpoint()
+            && !ent->outbound->IsExtraCore() && !isCustomFullConfig(ent) && !isXrayFullConfig(ent);
+    }
+
+    int PreferredGlobalOutbound(int concreteProfileID) {
+        const auto route = dataManager->routesRepo->GetRoutingSnapshot(dataManager->settingsRepo->current_route_id).profile;
+        const auto concrete = dataManager->profilesRepo->GetProfile(concreteProfileID);
+        const int gid = route && route->managedBySubscription ? route->managedGroupID : concrete ? concrete->gid : -1;
+        const auto group = dataManager->groupsRepo->GetGroup(gid);
+        if (!group || group->archive) return -1;
+        int preferred = -1;
+        for (int id : group->Profiles()) {
+            const auto ent = dataManager->profilesRepo->GetProfile(id);
+            if (!ent || ent->type != "selector" || ent->name.trimmed().compare("GLOBAL", Qt::CaseInsensitive) != 0 || !IsGlobalOutboundSupported(ent)) continue;
+            if (preferred >= 0) return -1;
+            preferred = id;
+        }
+        return preferred;
+    }
+
+    QString GlobalOutboundLabel(int profileID) {
+        const auto ent = dataManager->profilesRepo->GetProfile(profileID);
+        if (!ent) return QObject::tr("Missing outbound (ID %1)").arg(profileID);
+        const auto group = dataManager->groupsRepo->GetGroup(ent->gid);
+        return QString("[%1] %2 (ID %3)").arg(group ? group->name : QObject::tr("Missing group"), ent->name).arg(profileID);
     }
 
     bool CanBeAuxEndpoint(const std::shared_ptr<Profile>& ent)

@@ -173,6 +173,7 @@ namespace Configs {
             Rules.push_back(std::make_shared<RouteRule>(*item));
         }
         defaultOutboundID = other.defaultOutboundID;
+        localOverridesSourceID = other.localOverridesSourceID;
         isRaw = other.isRaw;
         rawRoute = other.rawRoute;
         preventModifications = other.preventModifications;

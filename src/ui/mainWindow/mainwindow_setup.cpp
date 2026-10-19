@@ -6,6 +6,11 @@
 #include "include/ui/mainWindow/TestRunner.h"
 
 #include <QMenu>
+#include <QComboBox>
+#include <QDialogButtonBox>
+#include <QVBoxLayout>
+#include <QScopeGuard>
+#include "include/ui/utils/RoutingModeMenu.hpp"
 #include <QSet>
 
 #include "include/configs/sub/GroupUpdater.hpp"
@@ -25,6 +30,7 @@
 #include "include/ui/widget/StartStopButton.hpp"
 
 #include "include/configs/generate.h"
+#include "include/configs/outbounds/custom.h"
 #include "include/database/GroupsRepo.h"
 #include "include/database/ProfilesRepo.h"
 #include "include/database/RoutesRepo.h"
@@ -953,6 +959,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     {
         ui->menuRouting_Menu->clear();
         ui->menuRouting_Menu->addAction(ui->menu_routing_settings);
+        const auto intent = Configs::dataManager->settingsRepo->GetRoutingIntent();
+        RoutingModeMenu::Populate(ui->menuRouting_Menu, intent, m_profileConnecting || m_profileDisconnecting,
+            globalModeUnsupportedReason(), intent.targetID < 0 ? tr("Not selected") : Configs::GlobalOutboundLabel(intent.targetID),
+            [this](Configs::RoutingMode mode) { changeRoutingMode(mode); },
+            [this] { changeRoutingMode(Configs::dataManager->settingsRepo->GetRoutingIntent().mode, true); });
+        auto* modeStatus = ui->menuRouting_Menu->addAction(routingModeStatus());
+        modeStatus->setObjectName("routingModeStatus");
+        modeStatus->setEnabled(false);
+        if (Configs::dataManager->settingsRepo->use_dns_object) {
+            auto* hint = ui->menuRouting_Menu->addAction(tr("Custom DNS is user-managed; it is not changed by routing mode."));
+            hint->setEnabled(false);
+        }
+        ui->menuRouting_Menu->addSeparator();
 
         auto* actionAdblock = new QAction(ui->menuRouting_Menu);
         actionAdblock->setText(tr("Enable AdBlock"));
@@ -1281,6 +1300,85 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             clearRestartNeeded();
         }
     });
+}
+
+QString MainWindow::globalModeUnsupportedReason() const {
+    const auto route = Configs::dataManager->routesRepo->GetRoutingSnapshot(Configs::dataManager->settingsRepo->current_route_id).profile;
+    if (!route || route->isRaw || route->preventModifications)
+        return tr("Global Proxy requires an editable structured routing profile. Select Rule for raw or locked routing.");
+    const int id = running ? running->id : Configs::dataManager->settingsRepo->remember_id;
+    const auto ent = Configs::dataManager->profilesRepo->GetProfile(id);
+    if (ent && ent->outbound && (ent->outbound->IsXrayFullConfig() || ent->outbound->IsExtraCore()))
+        return tr("Global Proxy cannot transform an extra-core or full configuration.");
+    if (ent && ent->Custom() && ent->Custom()->type == Configs::Custom::CustomFullConfig)
+        return tr("Global Proxy cannot transform a full configuration.");
+    return {};
+}
+
+int MainWindow::chooseGlobalOutbound(int selectedID) {
+    QDialog dialog(this);
+    dialog.setObjectName("globalOutboundDialog");
+    dialog.setWindowTitle(tr("Global Outbound"));
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* hint = new QLabel(tr("Choose a strategy group or proxy node independently of the started profile. "
+        "Global Proxy bypasses ordinary split rules and local overrides, not the selected ingress exclusions. "
+        "A strategy group's member can still be switched in its existing panel."), &dialog);
+    hint->setWordWrap(true); layout->addWidget(hint);
+    auto* choices = new QComboBox(&dialog);
+    choices->setObjectName("globalOutboundChoices");
+    for (int gid : Configs::dataManager->groupsRepo->GetAllGroupIds()) {
+        const auto group = Configs::dataManager->groupsRepo->GetGroup(gid);
+        if (!group || group->archive) continue;
+        for (int id : group->Profiles()) {
+            if (Configs::IsGlobalOutboundSupported(Configs::dataManager->profilesRepo->GetProfile(id)))
+                choices->addItem(Configs::GlobalOutboundLabel(id), id);
+        }
+    }
+    choices->setCurrentIndex(choices->findData(selectedID));
+    layout->addWidget(choices);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setEnabled(choices->currentIndex() >= 0);
+    connect(choices, &QComboBox::currentIndexChanged, &dialog, [=](int index) { buttons->button(QDialogButtonBox::Ok)->setEnabled(index >= 0); });
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons); dialog.resize(720, 190);
+    return dialog.exec() == QDialog::Accepted ? choices->currentData().toInt() : -1;
+}
+
+void MainWindow::changeRoutingMode(Configs::RoutingMode mode, bool chooseTarget) {
+    if (m_profileConnecting || m_profileDisconnecting || !mu_starting.tryLock()) return;
+    bool locked = true;
+    const auto release = qScopeGuard([&] { if (locked) mu_starting.unlock(); });
+    auto& settings = *Configs::dataManager->settingsRepo;
+    const auto before = settings.GetRoutingIntent();
+    if (mode == Configs::RoutingMode::GlobalProxy) {
+        if (const auto reason = globalModeUnsupportedReason(); !reason.isEmpty()) {
+            MessageBoxWarning(tr("Routing mode"), reason); return;
+        }
+    }
+    int targetID = before.targetID;
+    if (mode == Configs::RoutingMode::GlobalProxy && targetID < 0 && !chooseTarget) {
+        const int concrete = running ? running->id : settings.remember_id;
+        targetID = Configs::PreferredGlobalOutbound(concrete);
+        chooseTarget = targetID < 0;
+    }
+    if (chooseTarget) {
+        targetID = chooseGlobalOutbound(targetID);
+        if (targetID < 0) return; // Cancel leaves mode and target unchanged.
+        // Modal selection can outlast a core crash/stop; do not overwrite that newer transition.
+        if (m_profileConnecting || m_profileDisconnecting || settings.GetRoutingIntent() != before) return;
+    }
+    if (mode == Configs::RoutingMode::GlobalProxy && !Configs::IsGlobalOutboundSupported(Configs::dataManager->profilesRepo->GetProfile(targetID))) {
+        MessageBoxWarning(tr("Routing mode"), tr("The saved global outbound is missing or unsupported. Choose a new Global Outbound explicitly.")); return;
+    }
+    QString error;
+    if (!settings.SetRoutingIntent(mode, targetID, &error)) { MessageBoxWarning(tr("Routing mode"), error); return; }
+    if (settings.GetRoutingIntent() == before) return;
+    m_routingApplyError.clear();
+    const int restartID = running ? running->id : -1;
+    mu_starting.unlock(); locked = false;
+    refresh_status();
+    if (restartID >= 0) profile_start(restartID); // One existing guarded restart, not a second mode RPC.
 }
 
 MainWindow::~MainWindow() {

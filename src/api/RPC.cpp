@@ -462,8 +462,9 @@ namespace API {
     MW_show_log(QString("IPC call failed (code %1)\n").arg(status));
 
     QString Client::Start(bool *rpcOK, const libcore::LoadConfigReq &request,
-                          bool* tunAdapterRetryable, int timeoutMs) {
+                          bool* tunAdapterRetryable, int timeoutMs, TunStartup::Diagnostic* diagnostic) {
         if (tunAdapterRetryable) *tunAdapterRetryable = false;
+        if (diagnostic) *diagnostic = {};
         libcore::ErrorResp reply;
         std::vector<uint8_t> resp;
         auto status = channel->Call("Start", spb::pb::serialize<std::string>(request), resp, timeoutMs);
@@ -471,6 +472,14 @@ namespace API {
         if (status == LocalSocketChannel::CallOK && tryDeserialize(resp, reply)) {
             *rpcOK = true;
             if (tunAdapterRetryable) *tunAdapterRetryable = reply.tun_adapter_retryable.value_or(false);
+            if (diagnostic && reply.tun_startup_diagnostic.has_value()) {
+                const auto& info = *reply.tun_startup_diagnostic;
+                const auto createCode = info.create_code.value_or(0);
+                const auto openCode = info.open_code.value_or(0);
+                const int reason = static_cast<int>(info.reason.value_or(libcore::TunStartupReason::TUN_DIAGNOSTIC_UNAVAILABLE));
+                if (TunStartup::RecognizedCode(createCode) && TunStartup::RecognizedCode(openCode) && reason >= 0 && reason <= 3)
+                    *diagnostic = {true, info.tun_stage.value_or(false), info.configure_stage.value_or(false), createCode, openCode, reason};
+            }
             return QString::fromStdString(reply.error.value());
         } else {
             NOT_OK

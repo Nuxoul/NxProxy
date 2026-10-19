@@ -4,9 +4,14 @@
 #include <QJsonArray>
 #include <QMutexLocker>
 #include <QSet>
+#include <QDir>
+#include <QHostAddress>
+#include <QRegularExpression>
+#include <algorithm>
+#include <limits>
 
 namespace Configs {
-    RoutesRepo::RoutesRepo(Database& database) : db(database) {
+    RoutesRepo::RoutesRepo(Database& database) : db(database.Path()) {
         createTables();
     }
 
@@ -109,6 +114,17 @@ namespace Configs {
             db.exec("ALTER TABLE route_rules ADD COLUMN tls_spoof TEXT");
         if (!routeRulesColumnExists("tls_spoof_method"))
             db.exec("ALTER TABLE route_rules ADD COLUMN tls_spoof_method TEXT");
+        db.execThrow(R"(
+            CREATE TABLE IF NOT EXISTS route_local_overrides (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                route_profile_id INTEGER NOT NULL REFERENCES route_profiles(id) ON DELETE CASCADE,
+                match_kind TEXT NOT NULL,
+                match_value TEXT NOT NULL,
+                action INTEGER NOT NULL CHECK(action BETWEEN 0 AND 3),
+                priority INTEGER NOT NULL,
+                UNIQUE(route_profile_id,match_kind,match_value)
+            )
+        )");
     }
 
     bool RoutesRepo::routeRulesColumnExists(const char* columnName) const {
@@ -276,14 +292,16 @@ namespace Configs {
         return routeProfile;
     }
 
-    void RoutesRepo::saveToDatabase(const RouteProfile* routeProfile, int id) const {
+    bool RoutesRepo::saveToDatabase(const RouteProfile* routeProfile, int id) const {
         try {
             db.execThrow("BEGIN IMMEDIATE");
             saveToDatabaseInTx(routeProfile, id);
             db.execThrow("COMMIT");
+            return true;
         } catch (std::exception& e) {
             try { db.execThrow("ROLLBACK"); } catch (...) {}
             NotifyError("RoutesRepo::saveToDatabase", e);
+            return false;
         }
     }
 
@@ -523,7 +541,7 @@ namespace Configs {
         }
     }
     std::shared_ptr<RouteProfile> RoutesRepo::loadFromDatabase(int id) const {
-        auto profileQuery = db.query(R"(
+        auto profileQuery = db.queryThrow(R"(
             SELECT id, name, default_outbound_id, is_raw, raw_route, prevent_modifications,
                    is_remote, remote_url, auto_update, remote_last_update, endpoint_profile_ids,
                    inner_hop_endpoint_ids, managed_by_subscription, managed_group_id, managed_source_name
@@ -532,7 +550,7 @@ namespace Configs {
         if (!profileQuery || !profileQuery->executeStep()) return nullptr;
 
         auto routeProfile = routeProfileFromProfileRow(*profileQuery);
-        auto rulesQuery = db.query(R"(
+        auto rulesQuery = db.queryThrow(R"(
             SELECT name, type, ip_version, network, protocol,
                    inbound_json, domain_json, domain_suffix_json, domain_keyword_json, domain_regex_json,
                    source_ip_cidr_json, source_ip_is_private, ip_cidr_json, ip_is_private,
@@ -555,12 +573,12 @@ namespace Configs {
     }
 
     bool RoutesRepo::AddRouteProfile(std::shared_ptr<RouteProfile>& routeProfile) {
-        if (routeProfile->id >= 0) return false;
-        int newId = NewRouteProfileID();
-        routeProfile->id = newId;
+        if (!routeProfile || routeProfile->id >= 0) return false;
         QMutexLocker locker(&mutex);
-        identityMap[newId] = std::weak_ptr<RouteProfile>(routeProfile);
-        saveToDatabase(routeProfile.get(), routeProfile->id);
+        const int newId = NewRouteProfileID();
+        if (newId <= 0 || !saveToDatabase(routeProfile.get(), newId)) return false;
+        routeProfile->id = newId;
+        identityMap[newId] = routeProfile;
         return true;
     }
 
@@ -582,40 +600,34 @@ namespace Configs {
         db.exec("DELETE FROM route_profiles WHERE id = ?", id);
     }
 
-    void RoutesRepo::UpdateRouteProfiles(const QList<std::shared_ptr<RouteProfile>>& routeProfiles) {
-        QSet<int> existingIds;
-        auto query = db.query("SELECT id FROM route_profiles");
-        if (query) {
-            while (query->executeStep()) {
-                existingIds.insert(query->getColumn(0).getInt());
+    bool RoutesRepo::UpdateRouteProfiles(const QList<std::shared_ptr<RouteProfile>>& routeProfiles) {
+        QMutexLocker lock(&mutex);
+        QList<int> committedIDs;
+        try {
+            db.execThrow("BEGIN IMMEDIATE");
+            QSet<int> existingIDs;
+            auto query=db.queryThrow("SELECT id FROM route_profiles");
+            while(query->executeStep())existingIDs.insert(query->getColumn(0).getInt());
+            query.reset();
+            QSet<int> newIDs;
+            for(const auto& route:routeProfiles) {
+                if(!route)throw std::runtime_error("Missing route profile");
+                const int id=route->id>=0?route->id:NewRouteProfileID();
+                if(id<=0||newIDs.contains(id))throw std::runtime_error("Invalid or duplicate route profile ID");
+                newIDs.insert(id);committedIDs.append(id);saveToDatabaseInTx(route.get(),id);
+                if(route->id<0 && route->localOverridesSourceID>=0)
+                    db.execThrow("INSERT INTO route_local_overrides(route_profile_id,match_kind,match_value,action,priority) SELECT ?,match_kind,match_value,action,priority FROM route_local_overrides WHERE route_profile_id=?",id,route->localOverridesSourceID);
             }
-        }
-
-        QMutexLocker locker(&mutex);
-        QSet<int> newIds;
-        for (const auto& routeProfile : routeProfiles) {
-            newIds.insert(routeProfile->id);
-            if (routeProfile->id < 0) {
-                routeProfile->id = NewRouteProfileID();
-            }
-            saveToDatabase(routeProfile.get(), routeProfile->id);
-        }
-
-        std::vector<int> toDelete;
-        for (int id : existingIds) {
-            if (!newIds.contains(id)) toDelete.push_back(id);
-        }
-
-        for (const auto& routeProfile : routeProfiles) {
-            identityMap[routeProfile->id] = std::weak_ptr<RouteProfile>(routeProfile);
-        }
-        for (int id : toDelete) identityMap.erase(id);
-        if (!toDelete.empty()) {
-            db.execDeleteByIdIn("route_profiles", "id", toDelete);
-        }
+            for(int id:existingIDs)if(!newIDs.contains(id))db.execThrow("DELETE FROM route_profiles WHERE id=?",id);
+            db.execThrow("COMMIT");
+        }catch(const std::exception& e){try{db.execThrow("ROLLBACK");}catch(...){}NotifyError("UpdateRouteProfiles",e);return false;}
+        identityMap.clear();
+        for(qsizetype i=0;i<routeProfiles.size();++i){routeProfiles[i]->id=committedIDs[i];routeProfiles[i]->localOverridesSourceID=-1;identityMap[committedIDs[i]]=routeProfiles[i];}
+        return true;
     }
 
     QList<int> RoutesRepo::GetAllRouteProfileIds() const {
+        QMutexLocker lock(&mutex);
         QList<int> ids;
         auto query = db.query("SELECT id FROM route_profiles ORDER BY id");
         if (query) {
@@ -632,10 +644,9 @@ namespace Configs {
         QList<int> idsInOrder;
         QSet<int> cachedProfiles;
 
+        QMutexLocker locker(&mutex);
         auto profileQuery = db.query("SELECT id, name, default_outbound_id, is_raw, raw_route, prevent_modifications, is_remote, remote_url, auto_update, remote_last_update, endpoint_profile_ids, inner_hop_endpoint_ids, managed_by_subscription, managed_group_id, managed_source_name FROM route_profiles ORDER BY id");
         if (!profileQuery) return routeProfiles;
-
-        QMutexLocker locker(&mutex);
         while (profileQuery->executeStep()) {
             const int id = profileQuery->getColumn(0).getInt();
             std::shared_ptr<RouteProfile> profile;
@@ -686,9 +697,149 @@ namespace Configs {
         }
         
         QMutexLocker locker(&mutex);
-        saveToDatabase(routeProfile.get(), routeProfile->id);
+        if (!saveToDatabase(routeProfile.get(), routeProfile->id)) return false;
         identityMap[routeProfile->id] = std::weak_ptr<RouteProfile>(routeProfile);
         
         return true;
     }
+    namespace {
+        bool normalizeLocalMatch(const QString& raw, QString& kind, QString& value) {
+            const auto colon = raw.indexOf(':');
+            if (colon < 0) return false;
+            kind = raw.left(colon).trimmed();
+            value = raw.mid(colon + 1).trimmed();
+            if (value.isEmpty() || value.size() > 4096) return false;
+            for (const auto ch : value) if (ch.category() == QChar::Other_Control) return false;
+            if (kind == "domain" || kind == "suffix") {
+                if (value.endsWith('.')) value.chop(1);
+                if (value.isEmpty() || value.startsWith('.') || value.contains('/') || value.contains(':') || value.contains('@')) return false;
+                value = QString::fromLatin1(QUrl::toAce(value.toLower())).toLower();
+                if (value.isEmpty() || value.size() > 253) return false;
+                QHostAddress ip;
+                if (ip.setAddress(value)) return false;
+                const auto labels = value.split('.');
+                static const QRegularExpression label("^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$");
+                for (const auto& part : labels) if (!label.match(part).hasMatch()) return false;
+                return true;
+            }
+            if (kind == "ip") {
+                const bool subnet = value.contains('/');
+                QHostAddress address;
+                if (!subnet) {
+                    if (!address.setAddress(value)) return false;
+                    value = address.toString() + (address.protocol() == QAbstractSocket::IPv6Protocol ? "/128" : "/32");
+                } else {
+                    const auto parsed = QHostAddress::parseSubnet(value);
+                    if (parsed.second < 0 || parsed.first.isNull()) return false;
+                    const auto prefix = parsed.second;
+                    address = parsed.first;
+                    if (address.protocol() == QAbstractSocket::IPv4Protocol) {
+                        quint32 bits = address.toIPv4Address();
+                        bits &= prefix == 0 ? 0U : (0xffffffffU << (32-prefix));
+                        address = QHostAddress(bits);
+                    } else {
+                        auto bytes = address.toIPv6Address();
+                        for (int i=0;i<16;++i) {
+                            const int retained = std::clamp(prefix-i*8,0,8);
+                            bytes[i] &= retained == 0 ? 0 : static_cast<unsigned char>(0xff << (8-retained));
+                        }
+                        address = QHostAddress(bytes);
+                    }
+                    value = address.toString() + '/' + QString::number(prefix);
+                }
+                return true;
+            }
+            if (kind != "processName" && kind != "processPath") return false;
+            if (kind == "processName" && (value.contains('/') || value.contains('\\'))) return false;
+#ifdef Q_OS_WIN
+            value = value.toCaseFolded();
+            if (kind == "processPath") value = QDir::toNativeSeparators(QDir::cleanPath(value));
+#endif
+            return true;
+        }
+        LocalRouteOverride localFromRow(SQLite::Statement& query) {
+            LocalRouteOverride item;
+            item.id=query.getColumn(0).getInt64();item.kind=QString::fromStdString(query.getColumn(1).getText());
+            item.value=QString::fromStdString(query.getColumn(2).getText());
+            item.action=static_cast<simpleAction>(query.getColumn(3).getInt());item.priority=query.getColumn(4).getInt64();
+            return item;
+        }
+        void localError(QString* error,const QString& text) { if(error)*error=text; }
+    }
+
+    QList<LocalRouteOverride> RoutesRepo::loadLocalOverrides(int routeID) const {
+        QList<LocalRouteOverride> entries;
+        auto query=db.queryThrow("SELECT id,match_kind,match_value,action,priority FROM route_local_overrides WHERE route_profile_id=? ORDER BY priority DESC,id DESC",routeID);
+        while(query->executeStep()) entries.append(localFromRow(*query));
+        return entries;
+    }
+
+    RoutingSnapshot RoutesRepo::GetRoutingSnapshot(int routeID,QString* error) const {
+        if(error)error->clear();
+        QMutexLocker lock(&mutex);
+        try {
+            db.execThrow("BEGIN");
+            auto profile=loadFromDatabase(routeID);
+            auto local=loadLocalOverrides(routeID);
+            db.execThrow("COMMIT");
+            return {profile,local};
+        } catch(const std::exception& e) {
+            try{db.execThrow("ROLLBACK");}catch(...){}
+            NotifyError("GetRoutingSnapshot",e);localError(error,QObject::tr("Could not read routing rules."));return {};
+        }
+    }
+
+    bool RoutesRepo::SetLocalOverride(int routeID,const QString& raw,simpleAction action,QString* error,const LocalRouteOverride* expected) {
+        if(error)error->clear();
+        QString kind,value;
+        if(action<bypass||action>warpBypass||!normalizeLocalMatch(raw,kind,value)) {
+            localError(error,QObject::tr("Invalid local routing match."));return false;
+        }
+        QMutexLocker lock(&mutex);
+        try {
+            db.execThrow("BEGIN IMMEDIATE");
+            auto route=loadFromDatabase(routeID);
+            if(!route||route->isRaw||route->preventModifications||(route->isRemote&&route->autoUpdate))
+                throw std::runtime_error("Routing profile is missing, locked, raw or auto-updating from URL");
+            auto items=loadLocalOverrides(routeID);
+            if(expected) {
+                const auto found=std::find_if(items.begin(),items.end(),[&](const auto& item){
+                    return item.id==expected->id&&item.priority==expected->priority
+                        &&item.kind==expected->kind&&item.value==expected->value&&item.action==expected->action;
+                });
+                if(found==items.end())throw std::runtime_error("Local rule changed; refresh before editing");
+                if(found->kind==kind&&found->value==value&&found->action==action){db.execThrow("COMMIT");return true;}
+                if(std::any_of(items.begin(),items.end(),[&](const auto& item){
+                    return item.id!=expected->id&&item.kind==kind&&item.value==value;
+                }))throw std::runtime_error("Destination local rule already exists; refresh before editing");
+                db.execThrow("DELETE FROM route_local_overrides WHERE route_profile_id=? AND id=? AND priority=? AND match_kind=? AND match_value=? AND action=?",
+                    routeID,expected->id,expected->priority,expected->kind.toStdString(),expected->value.toStdString(),static_cast<int>(expected->action));
+                auto changed=db.queryThrow("SELECT changes()");
+                if(!changed->executeStep()||changed->getColumn(0).getInt()!=1)throw std::runtime_error("Local rule changed; refresh before editing");
+            } else {
+                for(const auto& item:items)if(item.kind==kind&&item.value==value&&item.action==action){db.execThrow("COMMIT");return true;}
+            }
+            qint64 priority=0;for(const auto& item:items)priority=std::max(priority,item.priority);
+            if(priority==std::numeric_limits<qint64>::max())throw std::runtime_error("Local rule priority exhausted");
+            db.execThrow("INSERT INTO route_local_overrides(route_profile_id,match_kind,match_value,action,priority) VALUES(?,?,?,?,?) ON CONFLICT(route_profile_id,match_kind,match_value) DO UPDATE SET action=excluded.action,priority=excluded.priority",routeID,kind.toStdString(),value.toStdString(),static_cast<int>(action),priority+1);
+            db.execThrow("COMMIT");return true;
+        }catch(const std::exception& e){
+            try{db.execThrow("ROLLBACK");}catch(...){}
+            NotifyError("SetLocalOverride",e);localError(error,QString::fromUtf8(e.what()));return false;
+        }
+    }
+
+    bool RoutesRepo::RemoveLocalOverride(int routeID,qint64 id,qint64 priority,QString* error) {
+        if(error)error->clear();QMutexLocker lock(&mutex);
+        try{
+            db.execThrow("BEGIN IMMEDIATE");
+            auto route=loadFromDatabase(routeID);
+            if(!route||route->isRaw||route->preventModifications||(route->isRemote&&route->autoUpdate))throw std::runtime_error("Routing profile is not editable");
+            auto entries=loadLocalOverrides(routeID);
+            if(std::none_of(entries.begin(),entries.end(),[&](const auto& e){return e.id==id&&e.priority==priority;}))throw std::runtime_error("Local rule changed; refresh before removing");
+            db.execThrow("DELETE FROM route_local_overrides WHERE route_profile_id=? AND id=? AND priority=?",routeID,id,priority);
+            db.execThrow("COMMIT");return true;
+        }catch(const std::exception& e){try{db.execThrow("ROLLBACK");}catch(...){}NotifyError("RemoveLocalOverride",e);localError(error,QString::fromUtf8(e.what()));return false;}
+    }
+
 }

@@ -264,6 +264,12 @@ private:
     std::shared_ptr<Configs::Profile> running;
     int last_running_profile_id = -1;
     bool m_profileConnecting = false;
+    std::optional<Configs::RoutingIntent> m_appliedRoutingIntent;
+    QString m_routingApplyError;
+    QString routingModeStatus() const;
+    QString globalModeUnsupportedReason() const;
+    int chooseGlobalOutbound(int selectedID);
+    void changeRoutingMode(Configs::RoutingMode mode, bool chooseTarget = false);
     bool m_profileDisconnecting = false;
     bool m_xrayGeoAssetBusy = false;
     bool m_ruleSetUpdateBusy = false;

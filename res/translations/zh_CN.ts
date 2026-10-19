@@ -2730,6 +2730,34 @@ Use a number followed by ns, us, ms, s, m, h or d.</source>
         <translation>更新了 %1, 失败了 %2:
 %3</translation>
     </message>
+    <message>
+        <source>Local Overrides...</source>
+        <translation>本地覆盖…</translation>
+    </message>
+    <message>
+        <source>Per-route local rules are saved separately from subscription rules.</source>
+        <translation>每个路由配置的本地规则独立于订阅规则保存。</translation>
+    </message>
+    <message>
+        <source>Local Overrides</source>
+        <translation>本地覆盖</translation>
+    </message>
+    <message>
+        <source>Local Overrides — %1</source>
+        <translation>本地覆盖 — %1</translation>
+    </message>
+    <message>
+        <source>Save this routing profile before editing local overrides.</source>
+        <translation>请先保存此路由配置，再编辑本地覆盖。</translation>
+    </message>
+    <message>
+        <source>Local overrides are not included in route share links. Use a routing backup to preserve them.</source>
+        <translation>路由分享链接不包含本地覆盖。请使用路由备份保存本地覆盖。</translation>
+    </message>
+    <message>
+        <source>Changes here are saved immediately, independently of the main settings dialog. Local overrides apply in Rule mode, before ordinary routing rules. Newest decision has priority. Proxy means the started profile. Restart the running configuration to apply changes.</source>
+        <translation>此处更改会立即保存，独立于主设置对话框。本地覆盖仅在规则模式生效，优先于普通路由规则，最新决定优先。“代理”表示已启动的配置。请重启运行配置以应用更改。</translation>
+    </message>
 </context>
 <context>
     <name>DialogOtpManager</name>
@@ -7502,6 +7530,102 @@ Error: %1</source>
         <source>[TUN] Startup result is unknown; resetting this core without restoring the configuration.</source>
         <translation>[TUN] 启动结果未确认，正在重置本次核心，不自动恢复配置。</translation>
     </message>
+    <message>
+        <source>Rule</source>
+        <translation>规则模式</translation>
+    </message>
+    <message>
+        <source>Global Proxy</source>
+        <translation>全局代理</translation>
+    </message>
+    <message>
+        <source>Global Outbound</source>
+        <translation>全局出口</translation>
+    </message>
+    <message>
+        <source>Routing mode</source>
+        <translation>路由模式</translation>
+    </message>
+    <message>
+        <source>Not selected</source>
+        <translation>未选择</translation>
+    </message>
+    <message>
+        <source>Global Proxy — %1</source>
+        <translation>全局代理 — %1</translation>
+    </message>
+    <message>
+        <source>Active: %1</source>
+        <translation>已生效：%1</translation>
+    </message>
+    <message>
+        <source> · Applying: %1</source>
+        <translation> · 正在应用：%1</translation>
+    </message>
+    <message>
+        <source> · Apply failed; saved: %1</source>
+        <translation> · 应用失败；已保存：%1</translation>
+    </message>
+    <message>
+        <source> · Next start: %1</source>
+        <translation> · 下次启动：%1</translation>
+    </message>
+    <message>
+        <source> · Invalid saved routing mode</source>
+        <translation> · 已保存的路由模式无效</translation>
+    </message>
+    <message>
+        <source>Custom DNS is user-managed; it is not changed by routing mode.</source>
+        <translation>自定义 DNS 由用户管理，不随路由模式自动修改。</translation>
+    </message>
+    <message>
+        <source>Global Proxy requires an editable structured routing profile. Select Rule for raw or locked routing.</source>
+        <translation>全局代理需要可编辑的结构化路由配置。原始或锁定的路由请选择规则模式。</translation>
+    </message>
+    <message>
+        <source>Global Proxy cannot transform an extra-core or full configuration.</source>
+        <translation>全局代理无法转换外部核心或完整配置。</translation>
+    </message>
+    <message>
+        <source>Global Proxy cannot transform a full configuration.</source>
+        <translation>全局代理无法转换完整配置。</translation>
+    </message>
+    <message>
+        <source>Choose a strategy group or proxy node independently of the started profile. Global Proxy bypasses ordinary split rules and local overrides, not the selected ingress exclusions. A strategy group's member can still be switched in its existing panel.</source>
+        <translation>独立于已启动配置选择策略组或代理节点。全局代理不执行普通分流规则和本地覆盖，但不会改变当前入口的排除范围。策略组成员仍可在原有面板中切换。</translation>
+    </message>
+    <message>
+        <source>The saved global outbound is missing or unsupported. Choose a new Global Outbound explicitly.</source>
+        <translation>已保存的全局出口不存在或不受支持，请明确选择新的全局出口。</translation>
+    </message>
+    <message>
+        <source>The configuration did not start successfully. The saved routing mode has not been applied.</source>
+        <translation>配置未能成功启动，已保存的路由模式尚未生效。</translation>
+    </message>
+    <message>
+        <source>Saved for Rule mode. Local overrides are inactive in Global Proxy.</source>
+        <translation>已为规则模式保存。全局代理模式下本地覆盖不生效。</translation>
+    </message>
+    <message>
+        <source>The running full configuration does not use routing-profile overrides.</source>
+        <translation>当前运行的完整配置不使用路由配置的本地覆盖。</translation>
+    </message>
+    <message>
+        <source>[TUN] Startup diagnostics could not be retained; startup policy is unchanged.</source>
+        <translation>[TUN] 无法留存启动诊断，启动策略保持不变。</translation>
+    </message>
+    <message>
+        <source>Startup diagnostics were not retained because file logging is Off.</source>
+        <translation>文件日志已关闭，未留存启动诊断。</translation>
+    </message>
+    <message>
+        <source>Startup diagnostics could not be retained completely.</source>
+        <translation>启动诊断未能完整留存。</translation>
+    </message>
+    <message>
+        <source>Startup diagnostics retained in %1</source>
+        <translation>启动诊断已留存至 %1</translation>
+    </message>
 </context>
 <context>
     <name>OtpItem</name>
@@ -8833,6 +8957,50 @@ Release note:
     <message>
         <source>Subscription refresh was not committed because profile storage failed. Existing profiles were kept.</source>
         <translation>订阅刷新因节点保存失败而未提交，原有节点已保留。</translation>
+    </message>
+    <message>
+        <source>Rule</source>
+        <translation>规则模式</translation>
+    </message>
+    <message>
+        <source>Global Proxy</source>
+        <translation>全局代理</translation>
+    </message>
+    <message>
+        <source>Global Outbound: %1</source>
+        <translation>全局出口：%1</translation>
+    </message>
+    <message>
+        <source>Wait until the current start or stop has finished.</source>
+        <translation>请等待当前启动或停止操作完成。</translation>
+    </message>
+    <message>
+        <source>Missing outbound (ID %1)</source>
+        <translation>出口不存在（ID %1）</translation>
+    </message>
+    <message>
+        <source>Missing group</source>
+        <translation>分组不存在</translation>
+    </message>
+    <message>
+        <source>Routing mode cannot be saved.</source>
+        <translation>无法保存路由模式。</translation>
+    </message>
+    <message>
+        <source>Failed to save routing mode. The previous selection is unchanged.</source>
+        <translation>保存路由模式失败，之前的选择保持不变。</translation>
+    </message>
+    <message>
+        <source>Global Proxy requires an editable structured routing profile. Switch to Rule for raw or locked routing.</source>
+        <translation>全局代理需要可编辑的结构化路由配置。原始或锁定的路由请切换到规则模式。</translation>
+    </message>
+    <message>
+        <source>The saved global outbound is missing or unsupported. Choose a strategy group or proxy node in Routing &gt; Global Outbound.</source>
+        <translation>已保存的全局出口不存在或不受支持。请在“路由 &gt; 全局出口”选择策略组或代理节点。</translation>
+    </message>
+    <message>
+        <source>Global Proxy cannot transform a full configuration, or the saved routing mode is invalid. Select Rule or a supported structured setup.</source>
+        <translation>全局代理无法转换完整配置，或已保存的路由模式无效。请选择规则模式或受支持的结构化配置。</translation>
     </message>
 </context>
 <context>

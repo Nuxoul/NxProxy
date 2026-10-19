@@ -113,6 +113,8 @@ void testParsingAndRefresh() {
     Configs::dataManager->routesRepo->AddRouteProfile(custom);
     Configs::dataManager->settingsRepo->current_route_id=custom->id;
     g->name="Renamed subscription";Configs::dataManager->groupsRepo->Save(g);
+    require(Configs::dataManager->settingsRepo->SetRoutingIntent(Configs::RoutingMode::GlobalProxy,sel->id),"refresh mode intent seed");
+    const auto modeBeforeRefresh=Configs::dataManager->settingsRepo->GetRoutingIntent();
     const auto routesBeforeRename=Configs::dataManager->routesRepo->GetAllRouteProfileIds();
     refresh(g->id);
     require(Configs::dataManager->routesRepo->GetAllRouteProfileIds()==routesBeforeRename,"group rename created a second managed route");
@@ -124,6 +126,7 @@ void testParsingAndRefresh() {
     for (const auto& route:Configs::dataManager->routesRepo->GetAllRouteProfiles())
         if (route->managedBySubscription && route->managedGroupID==g->id) managedID=route->id;
     require(managedID>=0,"managed route missing");
+    require(Configs::dataManager->routesRepo->SetLocalOverride(managedID,"suffix:override.test",Configs::proxy),"managed local decision");
     const auto managedBefore=Configs::dataManager->routesRepo->GetRouteProfile(managedID);
     const int ruleCount=managedBefore->Rules.size();const int defaultBefore=managedBefore->defaultOutboundID;
     for (bool clear:{false,true}) {
@@ -151,6 +154,10 @@ void testParsingAndRefresh() {
     const int oldC=named(g->id,"C");served=yaml("A, B").toUtf8();refresh(g->id);
     require(Configs::dataManager->profilesRepo->GetProfile(oldC)==nullptr,"valid refresh must delete truly removed node");
     require(selector(g->id)->Selector()->selectedID==named(g->id,"B"),"valid unchanged local selection lost");
+    require(Configs::dataManager->routesRepo->GetRoutingSnapshot(managedID).local.size()==1,"full subscription refresh removed local override");
+    served="proxies: []\nrules: []\n";refresh(g->id);
+    require(Configs::dataManager->routesRepo->GetRoutingSnapshot(managedID).local.size()==1,"empty subscription rules removed local override");
+    served=yaml("A, B").toUtf8();refresh(g->id);
     sel=selector(g->id);sel->Selector()->selectedID=1234567;Configs::dataManager->profilesRepo->Save(sel);
     refresh(g->id);require(selector(g->id)->Selector()->selectedID==named(g->id,"A"),"invalid local selection falls back to remote");
     const auto beforeClear=g->Profiles();
@@ -163,7 +170,9 @@ void testParsingAndRefresh() {
         require(p==nullptr,"successful clear refresh retained old node");
     }
     Configs::dataManager->settingsRepo->sub_clear=false;
-    std::cout<<"PASS R1 R4 R5 parser completeness, failed refresh immutability, valid deletions and local choices\n";
+    require(Configs::dataManager->settingsRepo->GetRoutingIntent()==modeBeforeRefresh,"complete/empty/renamed refresh changed mode or global target");
+    require(Configs::dataManager->settingsRepo->SetRoutingIntent(Configs::RoutingMode::Rule,-1),"restore refresh mode");
+    std::cout<<"PASS R1 R4 R5 parser completeness, failed refresh immutability, valid deletions, local choices and routing intent\n";
 }
 void testSortingAndConcurrency() {
     auto g=addGroup("Sorting regression");
@@ -262,15 +271,20 @@ void testPages() {
 #include "selector_panel_regressions.hpp"
 #include "tun_recovery_cases.hpp"
 #include "tun_recovery_qt.hpp"
+#include "local_route_regressions.hpp"
+#include "routing_mode_regressions.hpp"
+#include "tun_journal_regressions.hpp"
+#include "routing_integration_findings.hpp"
 int main(int argc,char** argv){
     QApplication app(argc,argv);app.setQuitOnLastWindowClosed(false);
+    if(app.arguments().size()==3&&app.arguments()[1]=="--tun-journal-child")return TunJournalTests::child(app.arguments()[2]);
     QTemporaryDir dir;require(dir.isValid(),"temporary database dir");QDir::setCurrent(dir.path());
     MW_show_log=[](const QString&){};MW_dialog_message=[](MwMessage,QStringList){};
     Configs::initDB((dir.path()+"/throne.db").toStdString());
     Configs::dataManager->settingsRepo->started_id=Configs::NoProfileId;
     QTimer dismiss;QObject::connect(&dismiss,&QTimer::timeout,[]{for(auto* w:QApplication::topLevelWidgets()) if(auto* box=qobject_cast<QMessageBox*>(w)) box->done(QMessageBox::Ok);});dismiss.start(5);
     int exit=0;
-    try{testParsingAndRefresh();testSortingAndConcurrency();testCleanupAndPersistence();testNarrowTestResults();testPages();runConnectionRegressions();runSelectorPanelRegressions();runTunRecoveryCases();runTunRecoveryQt();runBackgroundRegressions();std::cout<<"ALL REVIEW REGRESSIONS PASSED\n";}
+    try{RoutingFindingsTests::run();TunJournalTests::run();RoutingModeTests::run();LocalRouteTests::run();testParsingAndRefresh();testSortingAndConcurrency();testCleanupAndPersistence();testNarrowTestResults();testPages();runConnectionRegressions();runSelectorPanelRegressions();runTunRecoveryCases();runTunRecoveryQt();runBackgroundRegressions();std::cout<<"ALL REVIEW REGRESSIONS PASSED\n";}
     catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<"\n";exit=1;}
     pump(50);delete Configs::dataManager;Configs::dataManager=nullptr;return exit;
 }

@@ -265,7 +265,7 @@ namespace Configs {
     namespace {
         // Child-first order: delete order matters once foreign keys are re-enabled.
         const std::vector<std::string> kProfileTables = {"profiles", "groups_order", "groups"};
-        const std::vector<std::string> kRouteTables = {"route_rules", "route_profiles"};
+        const std::vector<std::string> kRouteTables = {"route_local_overrides", "route_rules", "route_profiles"};
         const std::vector<std::string> kSettingsTables = {"settings"};
         const std::vector<std::string> kOtpTables = {"otp_profiles"};
 
@@ -384,7 +384,11 @@ namespace Configs {
             db.exec("BEGIN IMMEDIATE");
 
             if (parts.profiles) for (const auto& t : kProfileTables) copyTable(db, t);
-            if (parts.routes) for (const auto& t : kRouteTables) skippedRules += copyTable(db, t);
+            if (parts.routes) {
+                // Old backups have no local layer: do not retain orphaned local decisions from this DB.
+                if (!tableExists(db, "bak", "route_local_overrides")) db.exec("DELETE FROM route_local_overrides");
+                for (const auto& t : kRouteTables) skippedRules += copyTable(db, t);
+            }
             if (parts.settings) for (const auto& t : kSettingsTables) copyTable(db, t);
             if (parts.otp) for (const auto& t : kOtpTables) copyTable(db, t);
 

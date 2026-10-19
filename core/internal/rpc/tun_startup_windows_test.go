@@ -5,6 +5,7 @@ package rpc
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"ThroneCore/gen"
@@ -37,6 +38,10 @@ func TestTunStartupFailureResponseReclaimsAttempt(t *testing.T) {
 	assertLifecycleEmpty(t)
 	if !response.GetTunAdapterRetryable() {
 		t.Fatal("transient Windows TUN creation conflict was not marked recoverable")
+	}
+	info := response.GetTunStartupDiagnostic()
+	if info == nil || !info.GetTunStage() || !info.GetConfigureStage() || info.GetCreateCode() != 183 || info.GetOpenCode() != 1168 || info.GetReason() != gen.TunStartupReason_TUN_ADAPTER_EXACT_PAIR {
+		t.Fatalf("wrong bounded diagnostic: %v", info)
 	}
 	// A new configuration instance, without restarting the core process, must work.
 	response, err = (&server{}).Start(context.Background(), &gen.LoadConfigReq{CoreConfig: To(lifecycleBoxConfig)})
@@ -92,9 +97,25 @@ func TestTunStartupTypedClassification(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			analysis := analyzeTunAdapterError(tt.err)
+			if analysis.retryable != tt.want {
+				t.Fatalf("analysis changed policy: %v", analysis)
+			}
+			if tt.want && (analysis.diagnostic == nil || analysis.diagnostic.GetReason() != gen.TunStartupReason_TUN_ADAPTER_EXACT_PAIR) {
+				t.Fatal("typed exact diagnostic missing")
+			}
+			if tt.name == "text only" && analysis.diagnostic != nil && analysis.diagnostic.GetCreateCode() != 0 {
+				t.Fatal("text became typed errno")
+			}
 			if got := retryableTunAdapterError(tt.err); got != tt.want {
 				t.Fatalf("classification=%v want=%v err=%v", got, tt.want, tt.err)
 			}
 		})
+	}
+}
+
+func TestTunStartupDiagnosticField(t *testing.T) {
+	if _, ok := reflect.TypeOf(gen.ErrorResp{}).FieldByName("TunStartupDiagnostic"); !ok {
+		t.Fatal("bounded TUN startup diagnostic response is missing")
 	}
 }

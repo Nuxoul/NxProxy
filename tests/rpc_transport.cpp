@@ -16,6 +16,7 @@ struct Peer {
     QString name = "throne-rpc-test-" + QUuid::createUuid().toString(QUuid::Id128);
     std::atomic<bool> stop{false}, legacy{false}, oversized{false}, hold{false};
     std::atomic<int> tests{0}, cancels{0}, starts{0};
+    std::atomic<bool> diagnosticOnly{false}, invalidDiagnostic{false}, malformedStart{false};
     std::promise<void> listening;
     std::thread worker;
     Peer() : worker([this]() { run(); }) { listening.get_future().wait(); }
@@ -64,10 +65,26 @@ struct Peer {
                         }
                     } else if (method == "Start") {
                         const int attempt = ++starts;
+                        if (malformedStart) { respond(id, 0, std::string("\x80", 1)); continue; }
                         libcore::ErrorResp reply;
                         if (legacy || attempt == 1) {
                             reply.error = "synthetic TUN adapter conflict";
-                            if (!legacy) reply.tun_adapter_retryable = true;
+                            if (!legacy) {
+                                reply.tun_adapter_retryable = true;
+                                reply.tun_startup_diagnostic = libcore::TunStartupDiagnostic{};
+                                auto& info = *reply.tun_startup_diagnostic;
+                                info.tun_stage = true; info.configure_stage = true; info.create_code = 183; info.open_code = 1168;
+                                info.reason = libcore::TunStartupReason::TUN_ADAPTER_EXACT_PAIR;
+                            }
+                        }
+                        if (diagnosticOnly || invalidDiagnostic) {
+                            reply.error = "informational diagnostic only";
+                            reply.tun_adapter_retryable = false;
+                            reply.tun_startup_diagnostic = libcore::TunStartupDiagnostic{};
+                            auto& info = *reply.tun_startup_diagnostic;
+                            info.tun_stage = true; info.configure_stage = true;
+                            info.create_code = invalidDiagnostic ? 999999 : 183; info.open_code = 1168;
+                            info.reason = libcore::TunStartupReason::TUN_ADAPTER_EXACT_PAIR;
                         }
                         respond(id, 0, spb::pb::serialize<std::string>(reply));
                     } else if (method == "Test") {
@@ -118,13 +135,26 @@ int main(int argc, char **argv) {
         bool ok = false;
         bool retryable = false;
         QString startError;
+        TunStartup::Diagnostic diagnostic;
         std::int64_t now = 0;
         const auto recovered = TunStartupRecovery::Run([&](int timeout) {
-            startError = client.Start(&ok, {}, &retryable, timeout);
+            startError = client.Start(&ok, {}, &retryable, timeout, &diagnostic);
+            if (peer.starts == 1) require(diagnostic.available && diagnostic.createCode == 183 && diagnostic.openCode == 1168, "bounded Start diagnostic was not decoded");
             return TunStartupRecovery::AttemptResult{ok, !startError.isEmpty(), retryable};
         }, [] { return true; }, [&](int ms) { now += ms; return true; }, [&] { return now; }, [](int, int) {});
         require(ok && startError.isEmpty() && !retryable && recovered.attempts == 2 && peer.starts == 2,
                 "real Start RPC did not recover typed adapter response");
+        require(!diagnostic.available, "successful Start retained stale diagnostic");
+        peer.diagnosticOnly = true;
+        client.Start(&ok, {}, &retryable, 2000, &diagnostic);
+        require(ok && diagnostic.available && !retryable, "informational analysis granted retry");
+        peer.diagnosticOnly = false; peer.invalidDiagnostic = true;
+        client.Start(&ok, {}, &retryable, 2000, &diagnostic);
+        require(ok && !diagnostic.available && !retryable, "unrecognized diagnostic fields accepted");
+        peer.invalidDiagnostic = false; peer.malformedStart = true;
+        client.Start(&ok, {}, &retryable, 2000, &diagnostic);
+        require(!ok && !diagnostic.available && !retryable, "malformed Start inferred completion or diagnostics");
+        peer.malformedStart = false;
         client.Test(&ok, {}, nullptr, 2000);
         require(ok, "fragmented response failed");
         peer.hold = true;
@@ -171,8 +201,8 @@ int main(int argc, char **argv) {
         peer.connect(client);
         require(!client.Capabilities().cancel_request.value_or(false), "legacy retained stale capabilities");
         retryable = true;
-        startError = client.Start(&ok, {}, &retryable, 2000);
-        require(ok && !startError.isEmpty() && !retryable, "old core Start defaulted recovery flag to true");
+        startError = client.Start(&ok, {}, &retryable, 2000, &diagnostic);
+        require(ok && !startError.isEmpty() && !retryable && !diagnostic.available, "old core Start retained recovery or diagnostic data");
         peer.hold = true;
         const auto legacyCancels = peer.cancels.load();
         client.Test(&ok, {}, nullptr, 40);

@@ -4,18 +4,84 @@
 #include <QJsonArray>
 #include <QDebug>
 #include <QUuid>
+#include <limits>
+#include <algorithm>
 
 #include "include/global/Utils.hpp"
 
 namespace Configs {
-    SettingsRepo::SettingsRepo(Database& database) : db(database) {
+    SettingsRepo::SettingsRepo(Database& database) : db(database), routingDb(database.Path()) {
         initMaps();
         createTables();
         loadAllSettings();
+        loadRoutingIntent();
         // An empty secret disables authentication on the API service outright.
         if (core_box_api_secret.isEmpty()) {
             core_box_api_secret = QUuid::createUuid().toString(QUuid::WithoutBraces).remove('-');
             Save();
+        }
+    }
+
+    void SettingsRepo::loadRoutingIntent() {
+        QMutexLocker lock(&routingMutex);
+        try {
+            auto rows = routingDb.queryThrow("SELECT key,value FROM settings WHERE key IN ('routing_mode','global_outbound_id','routing_revision')");
+            while (rows->executeStep()) {
+                const auto key = QString::fromStdString(rows->getColumn(0).getString());
+                const auto value = QString::fromStdString(rows->getColumn(1).getString());
+                bool ok = false;
+                if (key == "routing_mode") {
+                    const int mode = value.toInt(&ok);
+                    if (!ok || (mode != 0 && mode != 1)) routingIntent.valid = false;
+                    else routingIntent.mode = static_cast<RoutingMode>(mode);
+                } else if (key == "global_outbound_id") {
+                    routingIntent.targetID = value.toInt(&ok);
+                    if (!ok || routingIntent.targetID < -1) routingIntent.valid = false;
+                } else {
+                    routingIntent.revision = value.toULongLong(&ok);
+                    if (!ok) routingIntent.valid = false;
+                }
+            }
+            if (!routingIntent.valid) qWarning() << "Invalid saved desktop routing intent; select Rule or a global outbound again";
+        } catch (const std::exception&) {
+            routingIntent.valid = false;
+            qWarning() << "Unable to read desktop routing intent";
+        }
+    }
+
+    RoutingIntent SettingsRepo::GetRoutingIntent() const {
+        QMutexLocker lock(&routingMutex);
+        return routingIntent;
+    }
+
+    bool SettingsRepo::SetRoutingIntent(RoutingMode mode, int targetID, QString* error) {
+        if (error) error->clear();
+        if ((mode != RoutingMode::Rule && mode != RoutingMode::GlobalProxy) || targetID < -1 || noSave) {
+            if (error) *error = QObject::tr("Routing mode cannot be saved.");
+            return false;
+        }
+        QMutexLocker lock(&routingMutex);
+        if (routingIntent.valid && routingIntent.mode == mode && routingIntent.targetID == targetID) return true;
+        try {
+            routingDb.execThrow("BEGIN IMMEDIATE");
+            try {
+                quint64 revision = routingIntent.revision;
+                { auto row = routingDb.queryThrow("SELECT value FROM settings WHERE key='routing_revision'");
+                  if (row->executeStep()) revision = std::max(revision, QString::fromStdString(row->getColumn(0).getString()).toULongLong()); }
+                if (revision == std::numeric_limits<quint64>::max()) throw std::runtime_error("routing revision exhausted");
+                routingDb.execThrow("INSERT OR REPLACE INTO settings(key,value) VALUES('routing_mode',?)", std::to_string(static_cast<int>(mode)));
+                routingDb.execThrow("INSERT OR REPLACE INTO settings(key,value) VALUES('global_outbound_id',?)", std::to_string(targetID));
+                routingDb.execThrow("INSERT OR REPLACE INTO settings(key,value) VALUES('routing_revision',?)", std::to_string(revision + 1));
+                routingDb.execThrow("COMMIT");
+                routingIntent = RoutingIntent{mode, targetID, revision + 1, true};
+                return true;
+            } catch (...) {
+                routingDb.exec("ROLLBACK");
+                throw;
+            }
+        } catch (const std::exception&) {
+            if (error) *error = QObject::tr("Failed to save routing mode. The previous selection is unchanged.");
+            return false;
         }
     }
 

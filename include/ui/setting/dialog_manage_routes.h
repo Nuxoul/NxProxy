@@ -58,6 +58,8 @@ private:
 
     void show_dns_object_editor();
 
+    void show_local_overrides();
+
     void generate_warp_config();
 
     struct DnsAdvancedDraft {

@@ -1,4 +1,5 @@
 #pragma once
+#include "include/sys/TunStartupDiagnostic.hpp"
 
 #ifndef Q_MOC_RUN
 #include <core/gen/libcore.pb.h>
@@ -27,7 +28,8 @@ namespace API {
         // QString returns is error string
 
         QString Start(bool *rpcOK, const libcore::LoadConfigReq &request,
-                      bool* tunAdapterRetryable = nullptr, int timeoutMs = 0);
+                      bool* tunAdapterRetryable = nullptr, int timeoutMs = 0,
+                      TunStartup::Diagnostic* diagnostic = nullptr);
 
         QString Stop(bool *rpcOK);
 

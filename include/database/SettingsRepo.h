@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Database.h"
+#include "include/configs/RoutingIntent.h"
 #include "include/global/Const.hpp"
 #include "include/sys/UrlScheme.hpp"
 #include <QMutexLocker>
@@ -23,6 +24,11 @@ namespace Configs {
     class SettingsRepo {
     private:
         Database& db;
+        // Mode writes cannot join another repository's transaction on the shared connection.
+        mutable Database routingDb;
+        mutable QMutex routingMutex;
+        RoutingIntent routingIntent;
+        void loadRoutingIntent();
 
         QMap<QString, bool*>        boolMap;
         QMap<QString, int*>         intMap;
@@ -40,6 +46,8 @@ namespace Configs {
         explicit SettingsRepo(Database& database);
         
         bool Save();
+        RoutingIntent GetRoutingIntent() const;
+        bool SetRoutingIntent(RoutingMode mode, int targetID, QString* error = nullptr);
         
         // Runtime state and flags below are never persisted.
         QString core_socket_name = "";

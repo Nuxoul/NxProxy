@@ -29,6 +29,8 @@
 
 #include "include/sys/Process.hpp"
 #include "include/sys/TunStartupRecovery.hpp"
+#include "include/sys/TunStartupJournal.hpp"
+#include "include/global/Logger.hpp"
 
 #include <algorithm>
 #include <memory>
@@ -235,10 +237,12 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
             restartToken = core_process->NoteProfileExpected(ent->id);
         }
     }
-    auto restartCurrent = [this, restartToken] {
+    const auto requestedRouting = Configs::dataManager->settingsRepo->GetRoutingIntent();
+    auto restartCurrent = [this, restartToken, requestedRouting] {
         QMutexLocker lock(&coreProcessMutex);
         return !Configs::dataManager->settingsRepo->prepare_exit && core_process
-            && core_process->IsRestartCurrent(restartToken);
+            && core_process->IsRestartCurrent(restartToken)
+            && Configs::dataManager->settingsRepo->GetRoutingIntent() == requestedRouting;
     };
 
     // Ranking must run before the config is built and it blocks, so hop off the UI thread.
@@ -263,6 +267,8 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
     if (!result->error.isEmpty()) {
         { QMutexLocker lock(&coreProcessMutex);
           if (core_process) core_process->NoteConfigurationRejected(ent->id, restartToken); }
+        m_routingApplyError = result->error;
+        refresh_status();
         MessageBoxWarning(tr("BuildConfig return error"), result->error);
         return;
     }
@@ -298,12 +304,37 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
         Configs_sys::CoreProcess::LaunchToken launchToken = 0;
         QElapsedTimer recoveryClock;
         recoveryClock.start();
+        TunStartup::Journal journal(Logging::LogDir());
+        TunStartup::Record diagnosticRecord;
+        diagnosticRecord.profileID = ent->id;
+        diagnosticRecord.generation = restartToken;
+        bool diagnosticStarted = false;
+        TunStartup::WriteResult diagnosticWrite = TunStartup::WriteResult::Disabled;
+        bool diagnosticUnavailable = false;
+        const bool tunRequested = Configs::dataManager->settingsRepo->spmode_vpn;
+        auto retain = [&](TunStartup::Outcome outcome) {
+            if (!diagnosticStarted) return;
+            diagnosticRecord.outcome = outcome;
+            diagnosticRecord.elapsedMs = recoveryClock.elapsed();
+            diagnosticWrite = journal.Append(diagnosticRecord, Logging::GetLevel() != Logging::Level::Off);
+            diagnosticUnavailable = diagnosticUnavailable || diagnosticWrite == TunStartup::WriteResult::Unavailable;
+            if (diagnosticWrite == TunStartup::WriteResult::Unavailable && TunStartup::Journal::ShouldWarnOnce())
+                MW_show_log(tr("[TUN] Startup diagnostics could not be retained; startup policy is unchanged."));
+        };
         const auto recovery = TunStartupRecovery::Run(
             [&](int timeoutMs) {
                 { QMutexLocker lock(&coreProcessMutex);
                   launchToken = core_process ? core_process->LaunchGeneration() : 0; }
                 bool retryable = false;
-                error = defaultClient->Start(&rpcOK, req, &retryable, timeoutMs);
+                ++diagnosticRecord.attempt;
+                diagnosticRecord.launch = launchToken;
+                TunStartup::Diagnostic info;
+                error = defaultClient->Start(&rpcOK, req, &retryable, timeoutMs, &info);
+                diagnosticRecord.rpcOK = rpcOK;
+                diagnosticRecord.retryable = retryable;
+                diagnosticRecord.diagnostic = info;
+                if ((!rpcOK || !error.isEmpty()) && (tunRequested || info.available)) diagnosticStarted = true;
+                retain(!rpcOK ? TunStartup::Outcome::Unknown : error.isEmpty() ? TunStartup::Outcome::Succeeded : TunStartup::Outcome::Failed);
                 return TunStartupRecovery::AttemptResult{rpcOK, !error.isEmpty(), retryable};
             }, restartCurrent,
             [&](int delayMs) {
@@ -312,6 +343,7 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
                     [&] { return recoveryClock.elapsed(); });
             }, [&] { return recoveryClock.elapsed(); },
             [&](int attempt, int delayMs) {
+                retain(TunStartup::Outcome::Retry);
                 MW_show_log(tr("[TUN] Adapter is not ready; rebuilding the configuration in %1 ms (attempt %2/%3).")
                                 .arg(delayMs).arg(attempt).arg(TunStartupRecovery::MaxAttempts));
             });
@@ -322,14 +354,32 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
             MW_show_log(tr("[TUN] Automatic recovery exhausted after %1 attempts: %2")
                             .arg(recovery.attempts).arg(error));
         }
+        retain(recovery.cancelled ? TunStartup::Outcome::Cancelled : !rpcOK ? TunStartup::Outcome::Unknown
+            : error.isEmpty() ? TunStartup::Outcome::Succeeded : recovery.exhausted ? TunStartup::Outcome::Exhausted : TunStartup::Outcome::Failed);
+        QString diagnosticLocation;
+        if (diagnosticStarted) {
+            diagnosticLocation = Logging::GetLevel() == Logging::Level::Off
+                ? tr("Startup diagnostics were not retained because file logging is Off.")
+                : diagnosticUnavailable ? tr("Startup diagnostics could not be retained completely.")
+                : tr("Startup diagnostics retained in %1").arg(journal.Path());
+            MW_show_log(diagnosticLocation);
+        }
         // Queued ahead of every dialog below, so none of them can be shown over the prompt.
         runOnUiThread([restartPrompt] { if (restartPrompt) restartPrompt->dismiss(); });
         if (!rpcOK) {
             if (recovery.attempts > 0) {
                 MW_show_log(tr("[TUN] Startup result is unknown; resetting this core without restoring the configuration."));
-                runOnThread([this, launchToken] {
-                    QMutexLocker lock(&coreProcessMutex);
-                    if (core_process) core_process->ResetUnconfirmedStart(launchToken);
+                retain(TunStartup::Outcome::ResetRequested);
+                runOnThread([this, launchToken, journal, diagnosticRecord, diagnosticStarted] {
+                    bool reset = false;
+                    { QMutexLocker lock(&coreProcessMutex);
+                      if (core_process) reset = core_process->ResetUnconfirmedStart(launchToken); }
+                    if (!diagnosticStarted) return;
+                    auto record = diagnosticRecord;
+                    record.outcome = reset ? TunStartup::Outcome::ResetCompleted : TunStartup::Outcome::ResetSkipped;
+                    const auto written = journal.Append(record, Logging::GetLevel() != Logging::Level::Off);
+                    if (written == TunStartup::WriteResult::Unavailable && TunStartup::Journal::ShouldWarnOnce())
+                        MW_show_log(tr("[TUN] Startup diagnostics could not be retained; startup policy is unchanged."));
                 }, DS_cores, true);
             }
             return false;
@@ -337,7 +387,7 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
         if (recovery.cancelled || !restartCurrent()) {
             // Start is atomic and cannot be forcibly cancelled. A stop during that
             // call may have found no published `running` profile, so unwind here.
-            if (error.isEmpty()) { bool stopped = false; defaultClient->Stop(&stopped); }
+            if (error.isEmpty()) { bool stopped = false; defaultClient->Stop(&stopped); retain(TunStartup::Outcome::StaleUnwound); }
             return false;
         }
         if (!error.isEmpty()) {
@@ -368,7 +418,7 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
                     QMessageBox msg(
                         QMessageBox::Information,
                         tr("Tun device misbehaving"),
-                        tr("If you have trouble starting VPN, you can force reset Core process here and then try starting the profile again. The error is %1").arg(error),
+                        tr("If you have trouble starting VPN, you can force reset Core process here and then try starting the profile again. The error is %1").arg(error) + "\n\n" + diagnosticLocation,
                         QMessageBox::NoButton,
                         this
                     );
@@ -453,6 +503,8 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
 
         runOnUiThread([=, this] {
             if (!restartCurrent()) return;
+            m_appliedRoutingIntent = result->routingIntent;
+            m_routingApplyError.clear();
             clearRestartNeeded();
             start_vpn_challenge_poll();
             refresh_status();
@@ -503,7 +555,8 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
 
     runOnUiThread([this] {
         m_profileConnecting = true;
-        refresh_startstop_button();
+        m_routingApplyError.clear();
+        refresh_status();
     });
 
     launchSlotTransferred = true;
@@ -520,13 +573,19 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
         }
         MW_show_log(">>>>>>>> " + tr("Starting profile %1").arg(ent->outbound->DisplayTypeAndName()));
         if (!profile_start_stage2(restartPrompt)) {
+            runOnUiThread([=, this] {
+                if (Configs::dataManager->settingsRepo->GetRoutingIntent() == requestedRouting) {
+                    m_routingApplyError = tr("The configuration did not start successfully. The saved routing mode has not been applied.");
+                    refresh_status();
+                }
+            });
             MW_show_log("<<<<<<<< " + tr("Failed to start profile %1").arg(ent->outbound->DisplayTypeAndName()));
         }
         mu_starting.unlock();
         runOnUiThread([=, this] {
             if (restartPrompt) restartPrompt->dismiss();
             m_profileConnecting = false;
-            refresh_startstop_button();
+            refresh_status();
         });
     });
 }
@@ -610,6 +669,7 @@ void MainWindow::profile_stop(bool crash, bool block, bool manual, bool replacin
             if (restartPrompt) restartPrompt->dismiss();
 
             m_profileDisconnecting = false;
+            m_appliedRoutingIntent.reset();
             clearRestartNeeded();
             // profile_start() stops the old run first, so only a stop outside a restart is the user's.
             const bool restartingForAuth = manual && id == m_vpnAuthRestartID;

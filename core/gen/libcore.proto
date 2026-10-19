@@ -53,10 +53,26 @@ message EmptyReq {}
 
 message EmptyResp {}
 
+// Informational only: this enum cannot authorize a Start retry.
+enum TunStartupReason {
+  TUN_DIAGNOSTIC_UNAVAILABLE = 0;
+  TUN_ADAPTER_EXACT_PAIR = 1;
+  TUN_ADAPTER_INCOMPLETE_PAIR = 2;
+  TUN_WRONG_STAGE = 3;
+}
+message TunStartupDiagnostic {
+  optional bool tun_stage = 1 [default = false];
+  optional bool configure_stage = 2 [default = false];
+  optional uint32 create_code = 3 [default = 0];
+  optional uint32 open_code = 4 [default = 0];
+  optional TunStartupReason reason = 5 [default = TUN_DIAGNOSTIC_UNAVAILABLE];
+}
+
 message ErrorResp {
   optional string error = 1 [default = ""];
   // Start only: failed attempt was reclaimed; Windows TUN adapter conflict may recover.
   optional bool tun_adapter_retryable = 2 [default = false];
+  optional TunStartupDiagnostic tun_startup_diagnostic = 3;
 }
 
 message LoadConfigReq {

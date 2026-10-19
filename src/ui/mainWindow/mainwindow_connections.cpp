@@ -392,6 +392,9 @@ QString MainWindow::routeRuleAppendBlocker() const
     const auto& dm = Configs::dataManager;
     const auto currentRoute = dm->routesRepo->GetRouteProfile(dm->settingsRepo->current_route_id);
     if (!currentRoute) return tr("No active routing profile found.");
+    if (running && running->type == "custom" && running->Custom()
+        && running->Custom()->type == Configs::Custom::CustomFullConfig)
+        return tr("The running full configuration does not use routing-profile overrides.");
     if (currentRoute->preventModifications) return tr("The current routing profile is locked against modifications.");
     if (currentRoute->isRaw) return tr("The current routing profile is raw JSON.");
     if (currentRoute->isRemote && currentRoute->autoUpdate) return tr("The current routing profile auto-updates from a URL.");
@@ -411,15 +414,15 @@ bool MainWindow::addRuleToCurrentRoute(const QString& rawRule, Configs::simpleAc
     const auto currentRoute = dm->routesRepo->GetRouteProfile(dm->settingsRepo->current_route_id);
     if (!currentRoute) return fail(tr("No active routing profile found."));
 
-    if (!currentRoute->AppendSimpleRule(rawRule, action))
-        return fail(tr("Failed to add routing rule: %1").arg(rawRule));
-
-    if (!dm->routesRepo->Save(currentRoute))
-        return fail(tr("Failed to save routing rule: %1").arg(rawRule));
+    QString error;
+    if (!dm->routesRepo->SetLocalOverride(currentRoute->id, rawRule, action, &error))
+        return fail(tr("Failed to save routing rule: %1").arg(error));
 
     MW_show_log(tr("Appended %1 to the %2 rules of \"%3\"")
                     .arg(rawRule, Configs::simpleActionToString(action), currentRoute->name));
-    noteRestartNeeded(tr("Routing"));
+    if (dm->settingsRepo->GetRoutingIntent().mode == Configs::RoutingMode::GlobalProxy)
+        MW_show_log(tr("Saved for Rule mode. Local overrides are inactive in Global Proxy."));
+    else noteRestartNeeded(tr("Routing"));
     return true;
 }
 

@@ -255,7 +255,7 @@ namespace Subscription {
             created = false;
             for (const auto &route : Configs::dataManager->routesRepo->GetAllRouteProfiles()) {
                 if (route != nullptr && route->managedBySubscription && route->managedGroupID == gid)
-                    return route;
+                    return std::make_shared<Configs::RouteProfile>(*route);
             }
             auto route = Configs::RoutesRepo::NewRouteProfile();
             route->name = QObject::tr("Mihomo - %1").arg(sourceName);
@@ -274,15 +274,17 @@ namespace Subscription {
             if (lines.isEmpty()) {
                 for (const auto &route : Configs::dataManager->routesRepo->GetAllRouteProfiles()) {
                     if (route == nullptr || !route->managedBySubscription || route->managedGroupID != targetGroup) continue;
-                    route->Rules.clear();
-                    route->defaultOutboundID = Configs::proxyID;
-                    Configs::dataManager->routesRepo->Save(route);
+                    auto draft = std::make_shared<Configs::RouteProfile>(*route);
+                    draft->Rules.clear();
+                    draft->defaultOutboundID = Configs::proxyID;
+                    if (!Configs::dataManager->routesRepo->Save(draft))
+                        MW_show_log(QObject::tr("Failed to save imported routing rules."));
                 }
                 return;
             }
 
             QHash<QString, int> selectorIds;
-            for (const int id : group->profiles) {
+            for (const int id : group->Profiles()) {
                 const auto profile = Configs::dataManager->profilesRepo->GetProfile(id);
                 if (profile == nullptr || profile->type != "selector") continue;
                 const QString name = profile->name.trimmed();
@@ -328,7 +330,10 @@ namespace Subscription {
                 route->Rules.append(rule);
             }
 
-            Configs::dataManager->routesRepo->Save(route);
+            if (!Configs::dataManager->routesRepo->Save(route)) {
+                MW_show_log(QObject::tr("Failed to save imported routing rules."));
+                return;
+            }
             if (created) {
                 Configs::dataManager->settingsRepo->current_route_id = route->id;
                 Configs::dataManager->settingsRepo->Save();

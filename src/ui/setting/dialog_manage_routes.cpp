@@ -1,6 +1,9 @@
 #include "include/ui/setting/dialog_manage_routes.h"
 
 #include <QClipboard>
+#include <QTableWidget>
+#include <QHeaderView>
+#include <QLineEdit>
 
 #include "include/global/GuiUtils.hpp"
 
@@ -307,6 +310,11 @@ bool DialogManageRoutes::validate_dns_rules(const QString &rawString) {
 
 DialogManageRoutes::DialogManageRoutes(QWidget *parent) : QDialog(parent), ui(new Ui::DialogManageRoutes) {
     ui->setupUi(this);
+    auto* localButton = new QPushButton(tr("Local Overrides..."), this);
+    localButton->setObjectName("localOverridesButton");
+    localButton->setToolTip(tr("Per-route local rules are saved separately from subscription rules."));
+    ui->verticalLayout_6->addWidget(localButton);
+    connect(localButton, &QPushButton::clicked, this, &DialogManageRoutes::show_local_overrides);
     auto profiles = Configs::dataManager->routesRepo->GetAllRouteProfiles();
     for (const auto &item: profiles) {
         chainList << item;
@@ -565,7 +573,10 @@ void DialogManageRoutes::accept() {
     }
     Configs::dataManager->settingsRepo->dns_predefined_rules = predefinedRules;
 
-    Configs::dataManager->routesRepo->UpdateRouteProfiles(chainList);
+    if (!Configs::dataManager->routesRepo->UpdateRouteProfiles(chainList)) {
+        MessageBoxWarning(tr("Routing"), tr("Failed to save routing profiles. No routing changes were committed."));
+        return;
+    }
     Configs::dataManager->settingsRepo->current_route_id = currentRoute->id;
 
     Configs::dataManager->settingsRepo->enable_dns_server = ui->dnshijack_enable->isChecked();
@@ -639,6 +650,8 @@ void DialogManageRoutes::on_export_route_clicked()
     if (idx < 0) return;
 
     QString warnings;
+    if (chainList[idx]->id >= 0 && !Configs::dataManager->routesRepo->GetRoutingSnapshot(chainList[idx]->id).local.isEmpty())
+        warnings += tr("Local overrides are not included in route share links. Use a routing backup to preserve them.") + '\n';
     QApplication::clipboard()->setText(chainList[idx]->ToShareLink(&warnings));
     if (!warnings.isEmpty()) MessageBoxInfo(tr("Exported with warnings"), warnings);
 
@@ -757,6 +770,10 @@ void DialogManageRoutes::on_clone_route_clicked() {
 
     auto chainCopy = std::make_shared<Configs::RouteProfile>(*chainList[idx]);
     chainCopy->name = chainCopy->name + " clone";
+    chainCopy->localOverridesSourceID = chainList[idx]->id;
+    chainCopy->managedBySubscription = false;
+    chainCopy->managedGroupID = -1;
+    chainCopy->managedSourceName.clear();
     chainCopy->id = -1;
     chainList.append(chainCopy);
     reloadProfileItems();
@@ -884,4 +901,69 @@ void DialogManageRoutes::updateRemoteProfiles(const QList<std::shared_ptr<Config
             }
         });
     });
+}
+
+
+void DialogManageRoutes::show_local_overrides() {
+    const int index = ui->route_profiles->currentRow();
+    if (index < 0 || index >= chainList.size()) return;
+    const int routeID = chainList[index]->id;
+    if (routeID < 0) { MessageBoxInfo(tr("Local Overrides"), tr("Save this routing profile before editing local overrides.")); return; }
+    QDialog dialog(this);
+    dialog.setObjectName("localOverridesDialog");
+    dialog.setWindowTitle(tr("Local Overrides — %1").arg(chainList[index]->name));
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* hint = new QLabel(tr("Changes here are saved immediately, independently of the main settings dialog. "
+                              "Local overrides apply in Rule mode, before ordinary routing rules. Newest decision has priority. "
+                              "Proxy means the started profile. Restart the running configuration to apply changes."), &dialog);
+    hint->setWordWrap(true); layout->addWidget(hint);
+    auto* table = new QTableWidget(0, 3, &dialog);
+    table->setObjectName("localOverridesTable");
+    table->setHorizontalHeaderLabels({tr("Match"), tr("Action"), tr("Priority")});
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);table->setSelectionMode(QAbstractItemView::SingleSelection);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);layout->addWidget(table);
+    auto* row = new QHBoxLayout;
+    auto* match = new QLineEdit(&dialog);match->setObjectName("localOverrideMatch");
+    match->setPlaceholderText("suffix:example.test / processName:app.exe");row->addWidget(match);
+    auto* action = new QComboBox(&dialog);action->setObjectName("localOverrideAction");
+    action->addItem(tr("Proxy"),Configs::proxy);action->addItem(tr("Direct"),Configs::bypass);
+    action->addItem(tr("Block"),Configs::block);action->addItem(tr("Warp bypass"),Configs::warpBypass);row->addWidget(action);
+    layout->addLayout(row);
+    auto* buttons = new QHBoxLayout;auto* save = new QPushButton(tr("Save / Replace"), &dialog);
+    save->setObjectName("localOverrideSave");auto* remove = new QPushButton(tr("Delete"), &dialog);
+    remove->setObjectName("localOverrideDelete");auto* fresh = new QPushButton(tr("New"),&dialog);
+    buttons->addWidget(fresh);buttons->addWidget(save);buttons->addWidget(remove);buttons->addStretch();layout->addLayout(buttons);
+    auto* close = new QDialogButtonBox(QDialogButtonBox::Close,&dialog);layout->addWidget(close);
+    connect(close,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
+    QList<Configs::LocalRouteOverride> entries;
+    auto reload = [&] {
+        QString error;const auto snapshot=Configs::dataManager->routesRepo->GetRoutingSnapshot(routeID,&error);
+        entries=snapshot.local;table->setRowCount(entries.size());
+        for(qsizetype i=0;i<entries.size();++i){table->setItem(i,0,new QTableWidgetItem(entries[i].RawRule()));
+            table->setItem(i,1,new QTableWidgetItem(Configs::simpleActionToString(entries[i].action)));
+            table->setItem(i,2,new QTableWidgetItem(QString::number(entries[i].priority)));}
+        const bool editable=snapshot.profile&&!snapshot.profile->isRaw&&!snapshot.profile->preventModifications&&!(snapshot.profile->isRemote&&snapshot.profile->autoUpdate);
+        save->setEnabled(editable);remove->setEnabled(editable);
+        if(!error.isEmpty())MessageBoxWarning(tr("Local Overrides"),error);
+    };
+    connect(table,&QTableWidget::itemSelectionChanged,&dialog,[&] {
+        const int selected=table->currentRow();if(selected<0||selected>=entries.size())return;
+        match->setText(entries[selected].RawRule());action->setCurrentIndex(action->findData(entries[selected].action));
+    });
+    connect(fresh,&QPushButton::clicked,&dialog,[&]{table->clearSelection();table->setCurrentCell(-1,-1);match->clear();});
+    auto notify = [&] { MW_dialog_message(MwMessage::UpdateSettings,{MwArg::Route}); };
+    connect(save,&QPushButton::clicked,&dialog,[&] {
+        const int selected=table->currentRow();const Configs::LocalRouteOverride* expected=selected>=0&&selected<entries.size()?&entries[selected]:nullptr;
+        QString error;if(!Configs::dataManager->routesRepo->SetLocalOverride(routeID,match->text(),static_cast<Configs::simpleAction>(action->currentData().toInt()),&error,expected))
+            MessageBoxWarning(tr("Local Overrides"),error);
+        else {notify();reload();}
+    });
+    connect(remove,&QPushButton::clicked,&dialog,[&] {
+        const int selected=table->currentRow();if(selected<0||selected>=entries.size())return;
+        const auto entry=entries[selected];QString error;
+        if(!Configs::dataManager->routesRepo->RemoveLocalOverride(routeID,entry.id,entry.priority,&error))MessageBoxWarning(tr("Local Overrides"),error);
+        else{notify();reload();}
+    });
+    reload();dialog.resize(760,430);dialog.exec();
 }

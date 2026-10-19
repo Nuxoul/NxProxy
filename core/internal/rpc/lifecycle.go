@@ -58,7 +58,9 @@ func (s *server) start(ctx context.Context, in *gen.LoadConfigReq, deps lifecycl
 		if err != nil {
 			out.Error = To(err.Error())
 			// The failed box/sidecars have been reclaimed before retry is offered.
-			out.TunAdapterRetryable = To(retryableTunAdapterError(err))
+			analysis := analyzeTunAdapterError(err)
+			out.TunAdapterRetryable = To(analysis.retryable)
+			out.TunStartupDiagnostic = analysis.diagnostic
 			if out.GetTunAdapterRetryable() {
 				log.Printf("[Tun recovery] Failed startup reclaimed; adapter creation conflict is retryable: %v", err)
 			}

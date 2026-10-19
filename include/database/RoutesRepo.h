@@ -2,6 +2,7 @@
 
 #include "Database.h"
 #include "include/database/entities/RouteProfile.h"
+#include "include/database/entities/LocalRouteOverride.h"
 #include <3rdparty/SQLiteCpp/include/SQLiteCpp.h>
 #include <memory>
 #include <mutex>
@@ -15,7 +16,8 @@
 namespace Configs {
     class RoutesRepo {
     private:
-        Database& db;
+        // Private connection keeps route transactions isolated from unrelated repository writes.
+        mutable Database db;
         mutable std::mutex mutex;
         mutable std::map<int, std::weak_ptr<RouteProfile>> identityMap;
 
@@ -27,7 +29,7 @@ namespace Configs {
         
         std::shared_ptr<RouteProfile> routeProfileFromJson(const QJsonObject& json) const;
         
-        void saveToDatabase(const RouteProfile* routeProfile, int id) const;
+        bool saveToDatabase(const RouteProfile* routeProfile, int id) const;
 
         // Throws, so the caller's transaction aborts.
         void saveToDatabaseInTx(const RouteProfile* routeProfile, int id) const;
@@ -44,6 +46,7 @@ namespace Configs {
         void loadRulesForProfileIdsChunk(const QList<int>& profileIds, std::map<int, std::shared_ptr<RouteProfile>>& byId) const;
         
         void createTables() const;
+        QList<LocalRouteOverride> loadLocalOverrides(int routeID) const;
 
         [[nodiscard]] bool routeRulesColumnExists(const char* columnName) const;
 
@@ -64,7 +67,7 @@ namespace Configs {
         void DeleteRouteProfile(int id);
         
         // Replaces the whole set.
-        void UpdateRouteProfiles(const QList<std::shared_ptr<RouteProfile>>& routeProfiles);
+        bool UpdateRouteProfiles(const QList<std::shared_ptr<RouteProfile>>& routeProfiles);
         
         QList<int> GetAllRouteProfileIds() const;
 
@@ -72,5 +75,9 @@ namespace Configs {
         
         // No-op unless id >= 0.
         bool Save(const std::shared_ptr<RouteProfile>& routeProfile);
+        RoutingSnapshot GetRoutingSnapshot(int routeID, QString* error = nullptr) const;
+        bool SetLocalOverride(int routeID, const QString& raw, simpleAction action,
+                              QString* error = nullptr, const LocalRouteOverride* expected = nullptr);
+        bool RemoveLocalOverride(int routeID, qint64 id, qint64 priority, QString* error = nullptr);
     };
 }

@@ -3,6 +3,7 @@
 #include <QJsonObject>
 #include <QMap>
 #include <QSet>
+#include "include/configs/RoutingIntent.h"
 
 #include "include/database/entities/Profile.h"
 
@@ -34,6 +35,8 @@ namespace Configs
     class BuildConfigResult {
     public:
         QString error;
+        RoutingIntent routingIntent;
+        QString effectiveProxyTag;
         QJsonObject coreConfig;
         QString tunIPv4CIDR;
         bool isXrayNeeded = false;
@@ -126,6 +129,10 @@ namespace Configs
     std::shared_ptr<BuildConfigResult> BuildSingBoxConfig(const std::shared_ptr<Profile> &ent,
                                                        const BuildConfigOptions &options);
     bool IsValid(const std::shared_ptr<Profile> &ent);
+    bool IsGlobalOutboundSupported(const std::shared_ptr<Profile>& ent);
+    // Only a unique usable GLOBAL in the relevant group; never a cross-group name search.
+    int PreferredGlobalOutbound(int concreteProfileID);
+    QString GlobalOutboundLabel(int profileID);
 
     // Eligible: an openvpn/openconnect profile, or a chain whose exit hop is one, never the reverse.
     bool CanBeAuxEndpoint(const std::shared_ptr<Profile> &ent);
