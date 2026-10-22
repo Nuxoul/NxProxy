@@ -5,6 +5,10 @@
 #include <QCoreApplication>
 #include <QLocalServer>
 #include <QUuid>
+#include <QTemporaryDir>
+#include <QProcess>
+#include "src/global/Logger.cpp"
+#include "include/sys/TunStartupJournal.hpp"
 #include <thread>
 #include <future>
 #include <iostream>
@@ -12,11 +16,23 @@
 
 namespace {
 void require(bool ok, const char *what) { if (!ok) throw std::runtime_error(what); }
+template<class Diagnostic> void requireBounded(const Diagnostic& info){
+ if constexpr(requires{info.causes;info.errorDetail;info.coreBuild;info.detailTruncated;info.traversalTruncated;})require(info.causes.size()<=8&&info.errorDetail.toUtf8().size()<=3072&&info.detailTruncated&&info.traversalTruncated&&info.coreBuild=="unavailable","oversized peer diagnostic escaped bounds");
+ else throw std::runtime_error("bounded v2 output missing");
+}
+template<class Diagnostic> void requireDetailed(const Diagnostic& info,bool legacy=false){
+ if constexpr(requires{info.causes;info.errorDetail;info.coreBuild;info.version;}){
+  require(info.errorDetail.contains("set ipv4 address"),"Start error chain was not retained");
+  if(!legacy)require(info.version==2&&info.causes.size()==1&&info.causes.first().step==3&&info.causes.first().win32Code==1167&&info.coreBuild=="diagnostic=test-core", "Start substage/code/build missing");
+ }else throw std::runtime_error("Start diagnostic v2 is missing from GUI decode");
+}
+
 struct Peer {
     QString name = "throne-rpc-test-" + QUuid::createUuid().toString(QUuid::Id128);
     std::atomic<bool> stop{false}, legacy{false}, oversized{false}, hold{false};
     std::atomic<int> tests{0}, cancels{0}, starts{0};
-    std::atomic<bool> diagnosticOnly{false}, invalidDiagnostic{false}, malformedStart{false};
+    std::atomic<bool> diagnosticOnly{false}, invalidDiagnostic{false}, malformedStart{false}, hugeDiagnostic{false};
+    const std::string startFixture = [] {QFile file(qEnvironmentVariable("NX_TUN_DIAG_FIXTURE"));if(file.fileName().isEmpty())return std::string{};if(!file.open(QIODevice::ReadOnly))throw std::runtime_error("diagnostic fixture open");return file.readAll().toStdString();}();
     std::promise<void> listening;
     std::thread worker;
     Peer() : worker([this]() { run(); }) { listening.get_future().wait(); }
@@ -65,10 +81,11 @@ struct Peer {
                         }
                     } else if (method == "Start") {
                         const int attempt = ++starts;
+                        if(!startFixture.empty()){respond(id,0,startFixture);continue;}
                         if (malformedStart) { respond(id, 0, std::string("\x80", 1)); continue; }
                         libcore::ErrorResp reply;
                         if (legacy || attempt == 1) {
-                            reply.error = "synthetic TUN adapter conflict";
+                            reply.error = legacy ? "start inbound/tun[tun-in]: configure tun interface: set ipv4 address: device not connected" : "synthetic TUN adapter conflict";
                             if (!legacy) {
                                 reply.tun_adapter_retryable = true;
                                 reply.tun_startup_diagnostic = libcore::TunStartupDiagnostic{};
@@ -85,6 +102,10 @@ struct Peer {
                             info.tun_stage = true; info.configure_stage = true;
                             info.create_code = invalidDiagnostic ? 999999 : 183; info.open_code = 1168;
                             info.reason = libcore::TunStartupReason::TUN_ADAPTER_EXACT_PAIR;
+                            libcore::TunStartupCause cause;cause.step=libcore::TunStartupStep::TUN_SET_IPV4_ADDRESS;cause.win32_code=1167;info.causes.push_back(cause);
+                            info.error_detail="start inbound/tun[tun-in]: configure tun interface: set ipv4 address: device not connected";
+                            info.core_build="diagnostic=test-core";info.diagnostic_version=2;
+                            if(hugeDiagnostic){info.error_detail=std::string(9000,'x');info.core_build="https://secret.invalid/token";for(int i=0;i<16;++i){cause.step=static_cast<libcore::TunStartupStep>(i);info.causes.push_back(cause);}}
                         }
                         respond(id, 0, spb::pb::serialize<std::string>(reply));
                     } else if (method == "Test") {
@@ -128,12 +149,28 @@ struct Peer {
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     MW_show_log = [](QString) {};
+    if(app.arguments().size()==3&&app.arguments()[1]=="--diag-clean-success"){
+        Logging::SetLevel(Logging::Level::Debug);Logging::Init(app.arguments()[2]);Logging::Write(Logging::Level::Info,"subsequent successful clean session");Logging::Shutdown();return 0;
+    }
     try {
         Peer peer;
         API::Client client;
         peer.connect(client);
         bool ok = false;
         bool retryable = false;
+        if(!peer.startFixture.empty()) {
+            QTemporaryDir dir;require(dir.isValid(),"pipeline directory");
+            Logging::SetLevel(Logging::Level::Debug);Logging::Init(dir.path());
+            TunStartup::Diagnostic info;const auto error=client.Start(&ok,{},&retryable,2000,&info);
+            require(ok&&!retryable&&info.available&&info.version==2&&info.causes.size()==1&&info.causes.first().step==3&&info.causes.first().win32Code==1167,"real core Start -> GUI RPC lost evidence");
+            require(info.errorDetail==error&&!info.coreBuild.isEmpty(),"real core error detail changed");
+            TunStartup::Journal journal(Logging::LogDir());TunStartup::Record record;record.attempt=1;record.rpcOK=true;record.diagnostic=info;
+            require(journal.Append(record,true)==TunStartup::WriteResult::Written,"pipeline journal write");Logging::Shutdown();
+            QProcess next;next.setProgram(QCoreApplication::applicationFilePath());next.setArguments({"--diag-clean-success",dir.path()});next.start();require(next.waitForFinished(10000)&&next.exitCode()==0,"pipeline clean restart");
+            QFile file(journal.Path());require(file.open(QIODevice::ReadOnly),"pipeline retained file");const auto value=QJsonDocument::fromJson(file.readLine()).object();
+            require(value["error_detail"].toString()==error&&value["causes"].toArray().first().toObject()["win32_code"]==1167,"clean restart lost real core response evidence");
+            std::cout<<"PASS production Go Start response -> real QLocalSocket -> GUI decoder -> journal -> clean Logger process restart\n";return 0;
+        }
         QString startError;
         TunStartup::Diagnostic diagnostic;
         std::int64_t now = 0;
@@ -148,6 +185,8 @@ int main(int argc, char **argv) {
         peer.diagnosticOnly = true;
         client.Start(&ok, {}, &retryable, 2000, &diagnostic);
         require(ok && diagnostic.available && !retryable, "informational analysis granted retry");
+        requireDetailed(diagnostic);
+        peer.hugeDiagnostic=true;client.Start(&ok,{},&retryable,2000,&diagnostic);require(ok&&!retryable,"huge diagnostic changed retry policy");requireBounded(diagnostic);peer.hugeDiagnostic=false;
         peer.diagnosticOnly = false; peer.invalidDiagnostic = true;
         client.Start(&ok, {}, &retryable, 2000, &diagnostic);
         require(ok && !diagnostic.available && !retryable, "unrecognized diagnostic fields accepted");
@@ -203,6 +242,7 @@ int main(int argc, char **argv) {
         retryable = true;
         startError = client.Start(&ok, {}, &retryable, 2000, &diagnostic);
         require(ok && !startError.isEmpty() && !retryable && !diagnostic.available, "old core Start retained recovery or diagnostic data");
+        requireDetailed(diagnostic,true);
         peer.hold = true;
         const auto legacyCancels = peer.cancels.load();
         client.Test(&ok, {}, nullptr, 40);

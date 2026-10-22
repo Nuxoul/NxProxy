@@ -60,12 +60,35 @@ enum TunStartupReason {
   TUN_ADAPTER_INCOMPLETE_PAIR = 2;
   TUN_WRONG_STAGE = 3;
 }
+enum TunStartupStep {
+  TUN_STEP_UNKNOWN = 0;
+  TUN_CREATE_ADAPTER = 1;
+  TUN_OPEN_ADAPTER = 2;
+  TUN_SET_IPV4_ADDRESS = 3;
+  TUN_SET_IPV6_ADDRESS = 4;
+  TUN_SET_IPV4_DNS = 5;
+  TUN_SET_IPV6_DNS = 6;
+  TUN_SET_IPV4_OPTIONS = 7;
+  TUN_SET_IPV6_OPTIONS = 8;
+}
+message TunStartupCause {
+  optional TunStartupStep step = 1 [default = TUN_STEP_UNKNOWN];
+  // Presence means a real typed syscall.Errno, never parsed localized text.
+  optional uint32 win32_code = 2;
+}
 message TunStartupDiagnostic {
   optional bool tun_stage = 1 [default = false];
   optional bool configure_stage = 2 [default = false];
   optional uint32 create_code = 3 [default = 0];
   optional uint32 open_code = 4 [default = 0];
   optional TunStartupReason reason = 5 [default = TUN_DIAGNOSTIC_UNAVAILABLE];
+  repeated TunStartupCause causes = 6;
+  optional string error_detail = 7 [default = ""];
+  optional bool detail_truncated = 8 [default = false];
+  optional string core_build = 9 [default = ""];
+  optional bool traversal_truncated = 10 [default = false];
+  optional bool detail_redacted = 11 [default = false];
+  optional uint32 diagnostic_version = 12 [default = 0];
 }
 
 message ErrorResp {

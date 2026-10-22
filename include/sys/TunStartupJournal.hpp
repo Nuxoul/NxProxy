@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QLockFile>
 #include <QMutex>
 #include <QScopeGuard>
@@ -15,10 +16,19 @@
 #include "include/sys/TunStartupDiagnostic.hpp"
 
 namespace TunStartup {
-inline constexpr qint64 MaxRecordBytes = 2048;
+inline constexpr qint64 MaxRecordBytes = 8192;
 inline constexpr qint64 MaxFileBytes = 256 * 1024;
 enum class Outcome { Failed, Succeeded, Retry, Cancelled, Exhausted, Unknown, ResetRequested, ResetCompleted, ResetSkipped, StaleUnwound };
 enum class WriteResult { Written, Disabled, Unavailable };
+enum class Event { Attempt, Terminal, Retry, Reset };
+inline const char* EventName(Event event) {
+    switch (event) {
+    case Event::Terminal: return "terminal";
+    case Event::Retry: return "retry";
+    case Event::Reset: return "reset";
+    default: return "attempt";
+    }
+}
 struct Record {
     int attempt = 0;
     int profileID = -1;
@@ -29,6 +39,7 @@ struct Record {
     bool retryable = false;
     Diagnostic diagnostic;
     Outcome outcome = Outcome::Failed;
+    Event event = Event::Attempt;
 };
 inline const char* OutcomeName(Outcome outcome) {
     switch (outcome) {
@@ -44,8 +55,9 @@ inline const char* OutcomeName(Outcome outcome) {
     default: return "failed";
     }
 }
-// No free-form payload API. In particular configs, node labels, error text and
-// arbitrary paths cannot enter an encoded record. This writer never calls Logging.
+// Only bounded startup evidence, never configs or connection traffic. Original
+// diagnostic text is sanitized at this final persistence boundary, including
+// legacy-core and test inputs. This writer never calls Logging.
 class Journal {
     QString directory;
     const QString startID = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -64,13 +76,28 @@ public:
         QLockFile lock(Path() + ".lock");
         if (!lock.tryLock(0)) return WriteResult::Unavailable;
         const auto& info = record.diagnostic;
+        const auto safeDetail = SanitizeDetail(info.errorDetail);
+        QJsonArray causes;
+        for (const auto& cause : info.causes) {
+            if (causes.size() >= MaxCauses) break;
+            QJsonObject item{{"step", cause.step >= 0 && cause.step <= 8 ? cause.step : 0},
+                             {"code_available", cause.win32Code.has_value()}};
+            item["win32_code"] = cause.win32Code ? QJsonValue(static_cast<qint64>(*cause.win32Code)) : QJsonValue(QJsonValue::Null);
+            causes.append(item);
+        }
         QJsonObject object{
-            {"v", 1}, {"utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)},
+            {"v", 2}, {"utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)},
             {"session", sessionID}, {"start", startID}, {"pid", QString::number(QCoreApplication::applicationPid())},
             {"attempt", std::clamp(record.attempt, 0, 3)}, {"profile_id", record.profileID},
             {"generation", QString::number(record.generation)}, {"launch", QString::number(record.launch)},
             {"elapsed_ms", std::clamp<qint64>(record.elapsedMs, 0, 86400000)},
             {"rpc_ok", record.rpcOK}, {"retryable", record.retryable}, {"outcome", OutcomeName(record.outcome)},
+            {"event", EventName(record.event)}, {"diagnostic_version", static_cast<int>(std::min<quint32>(info.version, 2))},
+            {"causes", causes}, {"error_detail", safeDetail.text},
+            {"detail_truncated", info.detailTruncated || safeDetail.truncated},
+            {"detail_redacted", info.detailRedacted || safeDetail.redacted},
+            {"traversal_truncated", info.traversalTruncated || info.causes.size() > MaxCauses},
+            {"core_build", SafeBuild(info.coreBuild)},
             {"analysis_available", info.available}, {"tun_stage", info.tunStage}, {"configure_stage", info.configureStage},
             {"create_code", static_cast<int>(RecognizedCode(info.createCode) ? info.createCode : 0)},
             {"open_code", static_cast<int>(RecognizedCode(info.openCode) ? info.openCode : 0)},

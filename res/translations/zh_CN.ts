@@ -7623,8 +7623,8 @@ Error: %1</source>
         <translation>启动诊断未能完整留存。</translation>
     </message>
     <message>
-        <source>Startup diagnostics retained in %1</source>
-        <translation>启动诊断已留存至 %1</translation>
+        <source>Startup diagnostics retained in %1 (error chain included; sensitive values removed).</source>
+        <translation>启动诊断已留存至 %1（包含错误链，敏感内容已清理）。</translation>
     </message>
 </context>
 <context>

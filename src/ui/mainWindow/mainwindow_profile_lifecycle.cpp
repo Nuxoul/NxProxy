@@ -312,9 +312,10 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
         TunStartup::WriteResult diagnosticWrite = TunStartup::WriteResult::Disabled;
         bool diagnosticUnavailable = false;
         const bool tunRequested = Configs::dataManager->settingsRepo->spmode_vpn;
-        auto retain = [&](TunStartup::Outcome outcome) {
+        auto retain = [&](TunStartup::Outcome outcome, TunStartup::Event event = TunStartup::Event::Terminal) {
             if (!diagnosticStarted) return;
             diagnosticRecord.outcome = outcome;
+            diagnosticRecord.event = event;
             diagnosticRecord.elapsedMs = recoveryClock.elapsed();
             diagnosticWrite = journal.Append(diagnosticRecord, Logging::GetLevel() != Logging::Level::Off);
             diagnosticUnavailable = diagnosticUnavailable || diagnosticWrite == TunStartup::WriteResult::Unavailable;
@@ -333,8 +334,8 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
                 diagnosticRecord.rpcOK = rpcOK;
                 diagnosticRecord.retryable = retryable;
                 diagnosticRecord.diagnostic = info;
-                if ((!rpcOK || !error.isEmpty()) && (tunRequested || info.available)) diagnosticStarted = true;
-                retain(!rpcOK ? TunStartup::Outcome::Unknown : error.isEmpty() ? TunStartup::Outcome::Succeeded : TunStartup::Outcome::Failed);
+                if ((!rpcOK || !error.isEmpty()) && (tunRequested || (info.tunStage && info.configureStage && info.reason != 3))) diagnosticStarted = true;
+                retain(!rpcOK ? TunStartup::Outcome::Unknown : error.isEmpty() ? TunStartup::Outcome::Succeeded : TunStartup::Outcome::Failed, TunStartup::Event::Attempt);
                 return TunStartupRecovery::AttemptResult{rpcOK, !error.isEmpty(), retryable};
             }, restartCurrent,
             [&](int delayMs) {
@@ -343,7 +344,7 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
                     [&] { return recoveryClock.elapsed(); });
             }, [&] { return recoveryClock.elapsed(); },
             [&](int attempt, int delayMs) {
-                retain(TunStartup::Outcome::Retry);
+                retain(TunStartup::Outcome::Retry, TunStartup::Event::Retry);
                 MW_show_log(tr("[TUN] Adapter is not ready; rebuilding the configuration in %1 ms (attempt %2/%3).")
                                 .arg(delayMs).arg(attempt).arg(TunStartupRecovery::MaxAttempts));
             });
@@ -361,7 +362,7 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
             diagnosticLocation = Logging::GetLevel() == Logging::Level::Off
                 ? tr("Startup diagnostics were not retained because file logging is Off.")
                 : diagnosticUnavailable ? tr("Startup diagnostics could not be retained completely.")
-                : tr("Startup diagnostics retained in %1").arg(journal.Path());
+                : tr("Startup diagnostics retained in %1 (error chain included; sensitive values removed).").arg(journal.Path());
             MW_show_log(diagnosticLocation);
         }
         // Queued ahead of every dialog below, so none of them can be shown over the prompt.
@@ -369,13 +370,14 @@ void MainWindow::profile_start(int _id, bool automaticRecovery, quint64 recovery
         if (!rpcOK) {
             if (recovery.attempts > 0) {
                 MW_show_log(tr("[TUN] Startup result is unknown; resetting this core without restoring the configuration."));
-                retain(TunStartup::Outcome::ResetRequested);
+                retain(TunStartup::Outcome::ResetRequested, TunStartup::Event::Reset);
                 runOnThread([this, launchToken, journal, diagnosticRecord, diagnosticStarted] {
                     bool reset = false;
                     { QMutexLocker lock(&coreProcessMutex);
                       if (core_process) reset = core_process->ResetUnconfirmedStart(launchToken); }
                     if (!diagnosticStarted) return;
                     auto record = diagnosticRecord;
+                    record.event = TunStartup::Event::Reset;
                     record.outcome = reset ? TunStartup::Outcome::ResetCompleted : TunStartup::Outcome::ResetSkipped;
                     const auto written = journal.Append(record, Logging::GetLevel() != Logging::Level::Off);
                     if (written == TunStartup::WriteResult::Unavailable && TunStartup::Journal::ShouldWarnOnce())

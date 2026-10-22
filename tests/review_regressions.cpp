@@ -278,6 +278,7 @@ void testPages() {
 int main(int argc,char** argv){
     QApplication app(argc,argv);app.setQuitOnLastWindowClosed(false);
     if(app.arguments().size()==3&&app.arguments()[1]=="--tun-journal-child")return TunJournalTests::child(app.arguments()[2]);
+    if(app.arguments().size()==4&&app.arguments()[1]=="--tun-evidence-child")return TunJournalTests::evidenceChild(app.arguments()[2],app.arguments()[3]=="failed");
     QTemporaryDir dir;require(dir.isValid(),"temporary database dir");QDir::setCurrent(dir.path());
     MW_show_log=[](const QString&){};MW_dialog_message=[](MwMessage,QStringList){};
     Configs::initDB((dir.path()+"/throne.db").toStdString());

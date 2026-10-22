@@ -477,10 +477,34 @@ namespace API {
                 const auto createCode = info.create_code.value_or(0);
                 const auto openCode = info.open_code.value_or(0);
                 const int reason = static_cast<int>(info.reason.value_or(libcore::TunStartupReason::TUN_DIAGNOSTIC_UNAVAILABLE));
-                if (TunStartup::RecognizedCode(createCode) && TunStartup::RecognizedCode(openCode) && reason >= 0 && reason <= 3)
+                if (TunStartup::RecognizedCode(createCode) && TunStartup::RecognizedCode(openCode) && reason >= 0 && reason <= 3) {
                     *diagnostic = {true, info.tun_stage.value_or(false), info.configure_stage.value_or(false), createCode, openCode, reason};
+                    diagnostic->version = info.diagnostic_version.value_or(0);
+                    diagnostic->traversalTruncated = info.traversal_truncated.value_or(false) || info.causes.size() > TunStartup::MaxCauses;
+                    for (const auto& cause : info.causes) {
+                        if (diagnostic->causes.size() >= TunStartup::MaxCauses) break;
+                        const int step = static_cast<int>(cause.step.value_or(libcore::TunStartupStep::TUN_STEP_UNKNOWN));
+                        if (step < 0 || step > 8) { diagnostic->traversalTruncated = true; continue; }
+                        diagnostic->causes.append({step, cause.win32_code});
+                    }
+                    const auto safe = TunStartup::SanitizeDetail(QString::fromStdString(info.error_detail.value_or("")));
+                    diagnostic->errorDetail = safe.text;
+                    diagnostic->detailTruncated = safe.truncated || info.detail_truncated.value_or(false);
+                    diagnostic->detailRedacted = safe.redacted || info.detail_redacted.value_or(false);
+                    diagnostic->coreBuild = TunStartup::SafeBuild(QString::fromStdString(info.core_build.value_or("")));
+                }
             }
-            return QString::fromStdString(reply.error.value());
+            const auto originalError = QString::fromStdString(reply.error.value());
+            if (diagnostic && !originalError.isEmpty() && diagnostic->errorDetail.isEmpty()
+                && ((diagnostic->available && diagnostic->tunStage && diagnostic->configureStage && diagnostic->reason != 3)
+                    || (!reply.tun_startup_diagnostic.has_value() && originalError.contains("start inbound/tun[") && originalError.contains("configure tun interface")))) {
+                const auto safe = TunStartup::SanitizeDetail(originalError);
+                diagnostic->errorDetail = safe.text;
+                diagnostic->detailTruncated = safe.truncated;
+                diagnostic->detailRedacted = safe.redacted;
+                if (diagnostic->coreBuild.isEmpty()) diagnostic->coreBuild = "unavailable";
+            }
+            return originalError;
         } else {
             NOT_OK
             return "";

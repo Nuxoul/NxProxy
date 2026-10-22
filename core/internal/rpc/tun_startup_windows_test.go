@@ -4,9 +4,15 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"google.golang.org/protobuf/proto"
+	"os"
 	"reflect"
+	"strings"
+	"syscall"
 	"testing"
+	"unicode/utf8"
 
 	"ThroneCore/gen"
 	"ThroneCore/internal/boxbox"
@@ -117,5 +123,178 @@ func TestTunStartupTypedClassification(t *testing.T) {
 func TestTunStartupDiagnosticField(t *testing.T) {
 	if _, ok := reflect.TypeOf(gen.ErrorResp{}).FieldByName("TunStartupDiagnostic"); !ok {
 		t.Fatal("bounded TUN startup diagnostic response is missing")
+	}
+}
+
+// Public Start response: previously this distinct typed failure collapsed to all zero codes.
+func TestTunStartupConfigureEvidence(t *testing.T) {
+	stopLifecycle(t)
+	t.Cleanup(func() { stopLifecycle(t) })
+	failure := E.Cause(E.Cause(E.Cause(E.Cause(windows.ERROR_DEVICE_NOT_CONNECTED, "set ipv4 address"), "configure tun interface"), "start inbound/tun[tun-in]"), "start service")
+	deps := lifecycleDependencies{prepareXray: xrayPreparer, createBox: func([]byte, func(*boxbox.Box)) (*boxbox.Box, context.CancelFunc, error) { return nil, nil, failure }}
+	response, err := (&server{}).start(context.Background(), &gen.LoadConfigReq{CoreConfig: To(lifecycleBoxConfig)}, deps)
+	if err != nil || response.GetError() != failure.Error() || response.GetTunAdapterRetryable() {
+		t.Fatalf("original response/policy changed: %v %v", response, err)
+	}
+	info := response.GetTunStartupDiagnostic()
+	if info == nil {
+		t.Fatal("configure evidence missing")
+	}
+	value := reflect.ValueOf(info).Elem()
+	field := value.FieldByName("Causes")
+	if !field.IsValid() || field.Len() != 1 {
+		t.Fatal("configure failure omitted typed substage and Win32 code")
+	}
+	cause := field.Index(0).Elem()
+	code := cause.FieldByName("Win32Code")
+	stage := cause.FieldByName("Step")
+	if !code.IsValid() || code.IsNil() || code.Elem().Uint() != 1167 || !stage.IsValid() || stage.IsNil() || stage.Elem().Int() != 3 {
+		t.Fatalf("unexpected cause: %v", cause)
+	}
+	detail := value.FieldByName("ErrorDetail")
+	build := value.FieldByName("CoreBuild")
+	if !detail.IsValid() || detail.IsNil() || detail.Elem().String() != failure.Error() || !build.IsValid() || build.IsNil() || build.Elem().String() == "" {
+		t.Fatal("original configure error detail/core identity omitted")
+	}
+	if path := os.Getenv("NX_TUN_DIAG_FIXTURE"); path != "" {
+		encoded, e := proto.Marshal(response)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = os.WriteFile(path, encoded, 0600); e != nil {
+			t.Fatal(e)
+		}
+	}
+	assertLifecycleEmpty(t)
+}
+
+func TestTunStartupDiagnosticSteps(t *testing.T) {
+	stopLifecycle(t)
+	t.Cleanup(func() { stopLifecycle(t) })
+	cases := []struct {
+		label string
+		step  gen.TunStartupStep
+		code  syscall.Errno
+	}{
+		{"set ipv4 address", gen.TunStartupStep_TUN_SET_IPV4_ADDRESS, 1167},
+		{"set ipv6 address", gen.TunStartupStep_TUN_SET_IPV6_ADDRESS, 87},
+		{"set ipv4 dns", gen.TunStartupStep_TUN_SET_IPV4_DNS, 5},
+		{"set ipv6 dns", gen.TunStartupStep_TUN_SET_IPV6_DNS, 1168},
+		{"set ipv4 options", gen.TunStartupStep_TUN_SET_IPV4_OPTIONS, 50},
+		{"set ipv6 options", gen.TunStartupStep_TUN_SET_IPV6_OPTIONS, 1450},
+		{"create adapter", gen.TunStartupStep_TUN_CREATE_ADAPTER, 31},
+		{"open existing adapter", gen.TunStartupStep_TUN_OPEN_ADAPTER, 2},
+	}
+	for _, c := range cases {
+		t.Run(c.label, func(t *testing.T) {
+			failure := E.Cause(E.Cause(E.Cause(c.code, c.label), "configure tun interface"), "start inbound/tun[tun-in]")
+			deps := lifecycleDependencies{prepareXray: xrayPreparer, createBox: func([]byte, func(*boxbox.Box)) (*boxbox.Box, context.CancelFunc, error) { return nil, nil, failure }}
+			response, err := (&server{}).start(context.Background(), &gen.LoadConfigReq{CoreConfig: To(lifecycleBoxConfig)}, deps)
+			d := response.GetTunStartupDiagnostic()
+			if err != nil || response.GetTunAdapterRetryable() || d == nil || len(d.GetCauses()) != 1 || d.Causes[0].GetStep() != c.step || d.Causes[0].Win32Code == nil || d.Causes[0].GetWin32Code() != uint32(c.code) || d.GetErrorDetail() != failure.Error() {
+				t.Fatalf("distinct evidence lost: %v %v", response, err)
+			}
+		})
+	}
+	// Localized descriptions keep typed code; plain text never becomes errno.
+	for _, inner := range []error{localizedWinError{syscall.Errno(1167), "设备尚未连接"}, fmt.Errorf("设备尚未连接 (1167)")} {
+		failure := E.Cause(E.Cause(E.Cause(inner, "set ipv4 address"), "configure tun interface"), "start inbound/tun[tun-in]")
+		a := analyzeTunAdapterError(failure)
+		d := a.diagnostic
+		if a.retryable || len(d.Causes) != 1 || d.Causes[0].GetStep() != gen.TunStartupStep_TUN_SET_IPV4_ADDRESS {
+			t.Fatal("localized/untyped stage lost")
+		}
+		_, typed := inner.(localizedWinError)
+		if (d.Causes[0].Win32Code != nil) != typed {
+			t.Fatal("text inferred numeric code or localized typing lost")
+		}
+	}
+}
+func TestTunStartupDiagnosticPrivacyAndBounds(t *testing.T) {
+	raw := `start inbound/tun[tun-in]: configure tun interface: set ipv4 dns: failed https://user:pw@private.example/sub?token=abc password=secret uuid=11111111-2222-3333-4444-555555555555 C:\Private\file 203.0.113.9 "private-node" {"password":"jsonsecret"}`
+	d, cut, redacted := sanitizeTunErrorDetail(raw)
+	if cut || !redacted || !strings.Contains(d, "set ipv4 dns") {
+		t.Fatalf("sanitization damaged stage: %q", d)
+	}
+	for _, secret := range []string{"user:pw", "private.example", "token=abc", "secret", "11111111-2222", "Private", "203.0.113.9", "private-node"} {
+		if strings.Contains(d, secret) {
+			t.Fatalf("secret retained: %s", secret)
+		}
+	}
+	d, cut, _ = sanitizeTunErrorDetail(strings.Repeat("错误链", 9000))
+	if !cut || len(d) > 3072 || !utf8.ValidString(d) {
+		t.Fatal("UTF8 detail cap not explicit")
+	}
+	many := []error{}
+	for i := 0; i < 12; i++ {
+		many = append(many, E.Cause(syscall.Errno(1000+i), "set ipv4 dns"))
+	}
+	a := analyzeTunAdapterError(E.Cause(E.Cause(E.Errors(many...), "configure tun interface"), "start inbound/tun[tun-in]"))
+	if len(a.diagnostic.Causes) != 8 || !a.diagnostic.GetTraversalTruncated() || a.retryable {
+		t.Fatal("cause cap/policy wrong")
+	}
+	var deep error = syscall.Errno(1167)
+	for i := 0; i < 40; i++ {
+		deep = E.Cause(deep, "layer")
+	}
+	a = analyzeTunAdapterError(E.Cause(E.Cause(deep, "configure tun interface"), "start inbound/tun[tun-in]"))
+	if !a.diagnostic.GetTraversalTruncated() {
+		t.Fatal("deep tree not bounded")
+	}
+}
+
+func TestTunStartupDiagnosticReviewBoundaries(t *testing.T) {
+	wrap := func(inner error) error {
+		return E.Cause(E.Cause(inner, "configure tun interface"), "start inbound/tun[tun-in]")
+	}
+	pair := E.Errors(E.Cause(windows.ERROR_ALREADY_EXISTS, "create adapter"), E.Cause(windows.ERROR_NOT_FOUND, "open existing adapter"))
+	t.Run("deep exact pair keeps old retry policy", func(t *testing.T) {
+		var inner error = pair
+		for i := 0; i < 40; i++ {
+			inner = E.Cause(inner, "layer")
+		}
+		a := analyzeTunAdapterError(wrap(inner))
+		if !a.retryable || !a.diagnostic.GetTraversalTruncated() {
+			t.Fatal("diagnostic depth cap changed exact-pair retry policy")
+		}
+	})
+	t.Run("wide exact pair keeps old retry policy", func(t *testing.T) {
+		children := []error{}
+		for i := 0; i < 70; i++ {
+			children = append(children, fmt.Errorf("unrelated %d", i))
+		}
+		children = append(children, pair)
+		a := analyzeTunAdapterError(wrap(errors.Join(children...)))
+		if !a.retryable || !a.diagnostic.GetTraversalTruncated() {
+			t.Fatal("diagnostic node cap changed exact-pair retry policy")
+		}
+	})
+	t.Run("wrong stage has no rich payload", func(t *testing.T) {
+		for _, failure := range []error{E.Cause(pair, "configure tun interface"), E.Cause(pair, "start inbound/tun[tun-in]"), E.Errors(E.Cause(fmt.Errorf("a"), "configure tun interface"), E.Cause(fmt.Errorf("b"), "start inbound/tun[tun-in]"))} {
+			a := analyzeTunAdapterError(failure)
+			if a.retryable || a.diagnostic == nil || a.diagnostic.GetErrorDetail() != "" || len(a.diagnostic.Causes) != 0 || a.diagnostic.GetCoreBuild() != "" {
+				t.Fatal("wrong-stage chain got free-form payload")
+			}
+		}
+	})
+	t.Run("space paths fully redacted", func(t *testing.T) {
+		for _, path := range []string{`C:\Users\Alice Smith\Documents\profile`, `\\server\Alice Smith\private profile`} {
+			detail, _, redacted := sanitizeTunErrorDetail("set ipv4 dns: " + path + " | device unavailable")
+			if !redacted || strings.Contains(detail, "Smith") || strings.Contains(detail, "Documents") || strings.Contains(detail, "profile") {
+				t.Fatalf("path suffix leaked: %q", detail)
+			}
+		}
+	})
+}
+
+func TestTunStartupFlattenedErrorEvidence(t *testing.T) {
+	stopLifecycle(t)
+	t.Cleanup(func() { stopLifecycle(t) })
+	failure := fmt.Errorf("start service: start inbound/tun[tun-in]: configure tun interface: set ipv4 dns: localized device error 1167")
+	deps := lifecycleDependencies{prepareXray: xrayPreparer, createBox: func([]byte, func(*boxbox.Box)) (*boxbox.Box, context.CancelFunc, error) { return nil, nil, failure }}
+	response, err := (&server{}).start(context.Background(), &gen.LoadConfigReq{CoreConfig: To(lifecycleBoxConfig)}, deps)
+	d := response.GetTunStartupDiagnostic()
+	if err != nil || response.GetTunAdapterRetryable() || d == nil || d.GetErrorDetail() != failure.Error() || len(d.Causes) != 1 || d.Causes[0].Win32Code != nil || d.Causes[0].GetStep() != gen.TunStartupStep_TUN_STEP_UNKNOWN {
+		t.Fatal("flattened error lost original evidence or inferred typed code/step")
 	}
 }
