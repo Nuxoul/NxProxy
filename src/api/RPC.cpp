@@ -477,7 +477,7 @@ namespace API {
                 const auto createCode = info.create_code.value_or(0);
                 const auto openCode = info.open_code.value_or(0);
                 const int reason = static_cast<int>(info.reason.value_or(libcore::TunStartupReason::TUN_DIAGNOSTIC_UNAVAILABLE));
-                if (TunStartup::RecognizedCode(createCode) && TunStartup::RecognizedCode(openCode) && reason >= 0 && reason <= 3) {
+                if (TunStartup::RecognizedCode(createCode) && TunStartup::RecognizedCode(openCode) && reason >= 0 && reason <= 4) {
                     *diagnostic = {true, info.tun_stage.value_or(false), info.configure_stage.value_or(false), createCode, openCode, reason};
                     diagnostic->version = info.diagnostic_version.value_or(0);
                     diagnostic->traversalTruncated = info.traversal_truncated.value_or(false) || info.causes.size() > TunStartup::MaxCauses;

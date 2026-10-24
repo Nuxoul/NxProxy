@@ -32,6 +32,8 @@ struct Peer {
     std::atomic<bool> stop{false}, legacy{false}, oversized{false}, hold{false};
     std::atomic<int> tests{0}, cancels{0}, starts{0};
     std::atomic<bool> diagnosticOnly{false}, invalidDiagnostic{false}, malformedStart{false}, hugeDiagnostic{false};
+    const std::string ipv4Fixture = [] {QFile file(qEnvironmentVariable("NX_TUN_IPV4_FIXTURE"));if(file.fileName().isEmpty())return std::string{};if(!file.open(QIODevice::ReadOnly))throw std::runtime_error("IPv4 fixture open");return file.readAll().toStdString();}();
+    std::atomic<bool> ipv4Exhaust{false};
     const std::string startFixture = [] {QFile file(qEnvironmentVariable("NX_TUN_DIAG_FIXTURE"));if(file.fileName().isEmpty())return std::string{};if(!file.open(QIODevice::ReadOnly))throw std::runtime_error("diagnostic fixture open");return file.readAll().toStdString();}();
     std::promise<void> listening;
     std::thread worker;
@@ -82,6 +84,7 @@ struct Peer {
                     } else if (method == "Start") {
                         const int attempt = ++starts;
                         if(!startFixture.empty()){respond(id,0,startFixture);continue;}
+                        if(!ipv4Fixture.empty()){respond(id,0,(ipv4Exhaust||attempt==1)?ipv4Fixture:std::string{});continue;}
                         if (malformedStart) { respond(id, 0, std::string("\x80", 1)); continue; }
                         libcore::ErrorResp reply;
                         if (legacy || attempt == 1) {
@@ -158,6 +161,15 @@ int main(int argc, char **argv) {
         peer.connect(client);
         bool ok = false;
         bool retryable = false;
+        if(!peer.ipv4Fixture.empty()) {
+            TunStartup::Diagnostic evidence;QString finalError;std::int64_t clock=0;int waits=0;
+            auto run=[&]{return TunStartupRecovery::Run([&](int timeout){finalError=client.Start(&ok,{},&retryable,timeout,&evidence);if(!finalError.isEmpty())require(evidence.reason==4&&evidence.causes.size()==1&&evidence.causes.first().step==3&&evidence.causes.first().win32Code==1168,"IPv4 response reason/typed cause lost");return TunStartupRecovery::AttemptResult{ok,!finalError.isEmpty(),retryable};},[]{return true;},[&](int ms){clock+=ms;++waits;return true;},[&]{return clock;},[](int,int){});};
+            const auto recovered=run();require(ok&&finalError.isEmpty()&&recovered.attempts==2&&!recovered.exhausted&&peer.starts==2&&waits==1&&clock==1000,"field IPv4 failure did not recover on fresh second Start");
+            peer.ipv4Exhaust=true;peer.starts=0;clock=0;waits=0;const auto exhausted=run();
+            require(ok&&!finalError.isEmpty()&&finalError.contains("set ipv4 address")&&finalError.contains("Element not found.")&&exhausted.attempts==3&&exhausted.exhausted&&peer.starts==3&&waits==2&&clock==3000,"IPv4 persistent failure did not keep exact3attempt budget/original error");
+            TunStartup::Journal journal(QDir::tempPath()+"/ipv4-journal-"+QUuid::createUuid().toString(QUuid::Id128));TunStartup::Record record;record.diagnostic=evidence;record.rpcOK=true;record.retryable=retryable;record.outcome=TunStartup::Outcome::Exhausted;record.event=TunStartup::Event::Terminal;require(journal.Append(record,true)==TunStartup::WriteResult::Written,"IPv4 reason journal write");QFile file(journal.Path());require(file.open(QIODevice::ReadOnly),"IPv4 reason journal read");require(QJsonDocument::fromJson(file.readLine()).object()["reason"]==4,"IPv4 reason clipped to legacy range");file.close();QDir(QFileInfo(journal.Path()).absolutePath()).removeRecursively();
+            std::cout<<"PASS real production IPv4-1168 response -> RPC -> bounded runner recover-second/exhaust3/original final error/reason4 journal\n";return 0;
+        }
         if(!peer.startFixture.empty()) {
             QTemporaryDir dir;require(dir.isValid(),"pipeline directory");
             Logging::SetLevel(Logging::Level::Debug);Logging::Init(dir.path());

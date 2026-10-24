@@ -101,7 +101,7 @@ public:
             {"analysis_available", info.available}, {"tun_stage", info.tunStage}, {"configure_stage", info.configureStage},
             {"create_code", static_cast<int>(RecognizedCode(info.createCode) ? info.createCode : 0)},
             {"open_code", static_cast<int>(RecognizedCode(info.openCode) ? info.openCode : 0)},
-            {"reason", std::clamp(info.reason, 0, 3)},
+            {"reason", std::clamp(info.reason, 0, 4)},
         };
         // Version is app-owned build metadata, never remote/error/config text.
         const auto version = QCoreApplication::applicationVersion();

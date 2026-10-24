@@ -59,6 +59,7 @@ enum TunStartupReason {
   TUN_ADAPTER_EXACT_PAIR = 1;
   TUN_ADAPTER_INCOMPLETE_PAIR = 2;
   TUN_WRONG_STAGE = 3;
+  TUN_IPV4_ADDRESS_NOT_FOUND = 4;
 }
 enum TunStartupStep {
   TUN_STEP_UNKNOWN = 0;

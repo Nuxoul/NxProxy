@@ -298,3 +298,93 @@ func TestTunStartupFlattenedErrorEvidence(t *testing.T) {
 		t.Fatal("flattened error lost original evidence or inferred typed code/step")
 	}
 }
+
+func fieldTunIPv4NotFoundError(cause error) error {
+	return E.Cause(E.Cause(E.Cause(E.Cause(cause, "set ipv4 address"), "configure tun interface"), "start inbound/tun[tun-in]"), "start service")
+}
+
+// Exact field error, public response and actual attempt-owned child cleanup.
+func TestTunStartupIPv4NotFoundResponse(t *testing.T) {
+	stopLifecycle(t)
+	t.Cleanup(func() { stopLifecycle(t) })
+	req := &gen.LoadConfigReq{CoreConfig: To(lifecycleBoxConfig)}
+	deps, conn, path := lifecycleChild(t, req)
+	failure := fieldTunIPv4NotFoundError(windows.ERROR_NOT_FOUND)
+	deps.createBox = func([]byte, func(*boxbox.Box)) (*boxbox.Box, context.CancelFunc, error) { return nil, nil, failure }
+	response, err := (&server{}).start(context.Background(), req, *deps)
+	if err != nil || response.GetError() != failure.Error() {
+		t.Fatalf("original field error changed: %v %v", response, err)
+	}
+	assertLifecycleChildStopped(t, *conn, *path)
+	assertLifecycleEmpty(t)
+	if !response.GetTunAdapterRetryable() {
+		t.Fatal("field-confirmed typed IPv4 address1168 did not enter bounded recovery after cleanup")
+	}
+	info := response.GetTunStartupDiagnostic()
+	if info == nil || int32(info.GetReason()) != 4 || len(info.Causes) != 1 || info.Causes[0].GetStep() != gen.TunStartupStep_TUN_SET_IPV4_ADDRESS || info.Causes[0].GetWin32Code() != 1168 || info.GetErrorDetail() != failure.Error() {
+		t.Fatalf("IPv4 recovery evidence lost: %v", info)
+	}
+	if path := os.Getenv("NX_TUN_IPV4_FIXTURE"); path != "" {
+		data, e := proto.Marshal(response)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = os.WriteFile(path, data, 0600); e != nil {
+			t.Fatal(e)
+		}
+	}
+	response, err = (&server{}).Start(context.Background(), &gen.LoadConfigReq{CoreConfig: To(lifecycleBoxConfig)})
+	if err != nil || response.GetError() != "" || currentBox() == nil {
+		t.Fatalf("fresh configuration after IPv4 failure did not start: %v %v", response, err)
+	}
+}
+
+func TestTunStartupIPv4NotFoundMatrix(t *testing.T) {
+	stopLifecycle(t)
+	t.Cleanup(func() { stopLifecycle(t) })
+	scoped := func(label string, cause error) error {
+		return E.Cause(E.Cause(E.Cause(E.Cause(cause, label), "configure tun interface"), "start inbound/tun[tun-in]"), "start service")
+	}
+	ipv4 := E.Cause(windows.ERROR_NOT_FOUND, "set ipv4 address")
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"field", fieldTunIPv4NotFoundError(windows.ERROR_NOT_FOUND), true},
+		{"localized", fieldTunIPv4NotFoundError(localizedWinError{windows.ERROR_NOT_FOUND, "元素未找到"}), true},
+		{"typed fmt wrapper", fieldTunIPv4NotFoundError(fmt.Errorf("native: %w", windows.ERROR_NOT_FOUND)), true},
+		{"access denied", fieldTunIPv4NotFoundError(windows.ERROR_ACCESS_DENIED), false},
+		{"invalid parameter", fieldTunIPv4NotFoundError(windows.ERROR_INVALID_PARAMETER), false},
+		{"device not connected1167", fieldTunIPv4NotFoundError(windows.ERROR_DEVICE_NOT_CONNECTED), false},
+		{"DNS1168", scoped("set ipv4 dns", windows.ERROR_NOT_FOUND), false},
+		{"IPv6 address1168", scoped("set ipv6 address", windows.ERROR_NOT_FOUND), false},
+		{"IPv4 options1168", scoped("set ipv4 options", windows.ERROR_NOT_FOUND), false},
+		{"no tun", E.Cause(ipv4, "configure tun interface"), false},
+		{"no configure", E.Cause(ipv4, "start inbound/tun[tun-in]"), false},
+		{"wrong order", E.Cause(E.Cause(ipv4, "start inbound/tun[tun-in]"), "configure tun interface"), false},
+		{"wrong label", scoped("set ipv4 addresses", windows.ERROR_NOT_FOUND), false},
+		{"text lookalike", fmt.Errorf("start service: start inbound/tun[tun-in]: configure tun interface: set ipv4 address: Element not found."), false},
+		{"untyped inner", fieldTunIPv4NotFoundError(fmt.Errorf("Element not found. (1168)")), false},
+		{"mixed inner", fieldTunIPv4NotFoundError(errors.Join(windows.ERROR_NOT_FOUND, windows.ERROR_ACCESS_DENIED)), false},
+		{"unrelated sibling", E.Errors(E.Cause(windows.ERROR_NOT_FOUND, "set ipv4 address"), E.Cause(fmt.Errorf("other"), "start inbound/tun[tun-in]: configure tun interface")), false},
+		{"wrong nested operation", fieldTunIPv4NotFoundError(E.Cause(windows.ERROR_NOT_FOUND, "set ipv4 dns")), false},
+		{"configure reentry", fieldTunIPv4NotFoundError(E.Cause(windows.ERROR_NOT_FOUND, "configure tun interface")), false},
+		{"tun reentry", E.Cause(E.Cause(E.Cause(ipv4, "start inbound/tun[other]"), "configure tun interface"), "start inbound/tun[tun-in]"), false},
+		{"duplicate outer tun", E.Cause(fieldTunIPv4NotFoundError(windows.ERROR_NOT_FOUND), "start inbound/tun[other]"), false},
+		{"duplicate configure", E.Cause(E.Cause(E.Cause(ipv4, "configure tun interface"), "configure tun interface"), "start inbound/tun[tun-in]"), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			deps := lifecycleDependencies{prepareXray: xrayPreparer, createBox: func([]byte, func(*boxbox.Box)) (*boxbox.Box, context.CancelFunc, error) { return nil, nil, c.err }}
+			response, err := (&server{}).start(context.Background(), &gen.LoadConfigReq{CoreConfig: To(lifecycleBoxConfig)}, deps)
+			if err != nil || response.GetError() != c.err.Error() || response.GetTunAdapterRetryable() != c.want {
+				t.Fatalf("policy=%v want=%v response=%v error=%v", response.GetTunAdapterRetryable(), c.want, response, err)
+			}
+			if c.want && int32(response.GetTunStartupDiagnostic().GetReason()) != 4 {
+				t.Fatal("IPv4 cause reported as create/open pair")
+			}
+			assertLifecycleEmpty(t)
+		})
+	}
+}

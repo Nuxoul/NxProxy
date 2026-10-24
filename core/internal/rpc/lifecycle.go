@@ -62,7 +62,7 @@ func (s *server) start(ctx context.Context, in *gen.LoadConfigReq, deps lifecycl
 			out.TunAdapterRetryable = To(analysis.retryable)
 			out.TunStartupDiagnostic = analysis.diagnostic
 			if out.GetTunAdapterRetryable() {
-				log.Printf("[Tun recovery] Failed startup reclaimed; adapter creation conflict is retryable: %v", err)
+				log.Printf("[Tun recovery] Failed startup reclaimed; TUN startup failure is retryable: %v", err)
 			}
 		}
 	}()

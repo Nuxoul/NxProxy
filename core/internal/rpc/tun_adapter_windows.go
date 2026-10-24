@@ -98,7 +98,9 @@ func analyzeTunAdapterError(err error) tunAdapterAnalysis {
 	visit(err, false, false, gen.TunStartupStep_TUN_STEP_UNKNOWN, 0)
 	if tunSeen || configureSeen {
 		reason := gen.TunStartupReason_TUN_DIAGNOSTIC_UNAVAILABLE
-		if result.retryable {
+		if retryableTunIPv4AddressError(err) {
+			reason = gen.TunStartupReason_TUN_IPV4_ADDRESS_NOT_FOUND
+		} else if result.retryable {
 			reason = gen.TunStartupReason_TUN_ADAPTER_EXACT_PAIR
 		} else if !relevant {
 			reason = gen.TunStartupReason_TUN_WRONG_STAGE
@@ -129,8 +131,52 @@ func recognizedTunWinCode(err error) uint32 {
 	return 0
 }
 
-// Original precise policy, independent of informational evidence limits.
+// Field-confirmed IPv4 configuration subtype. Require real single-cause
+// ancestry and an actual errno leaf, not text, unrelated siblings or mixed errors.
+// The failed native configure path and Start-owned resources are closed before
+// this result is published; the GUI then recreates the whole config, bounded.
+func retryableTunIPv4AddressError(err error) bool {
+	tun, configure, address := false, false, false
+	for err != nil {
+		if _, many := err.(interface{ Unwrap() []error }); many {
+			return false
+		}
+		if one, ok := err.(interface{ Unwrap() error }); ok && one.Unwrap() != nil {
+			cause := one.Unwrap()
+			label := strings.TrimSuffix(err.Error(), ": "+cause.Error())
+			switch {
+			case strings.HasPrefix(label, "start inbound/tun[") && strings.HasSuffix(label, "]"):
+				if tun || configure || address {
+					return false
+				}
+				tun = true
+			case label == "configure tun interface":
+				if !tun || configure || address {
+					return false
+				}
+				configure = true
+			case label == "set ipv4 address":
+				if !tun || !configure || address {
+					return false
+				}
+				address = true
+			case strings.HasPrefix(label, "set ipv"):
+				return false
+			}
+			err = cause
+			continue
+		}
+		code, typed := err.(syscall.Errno)
+		return tun && configure && address && typed && code == windows.ERROR_NOT_FOUND
+	}
+	return false
+}
+
+// Original create/open policy remains intact, plus only the evidenced subtype.
 func retryableTunAdapterError(err error) bool {
+	if retryableTunIPv4AddressError(err) {
+		return true
+	}
 	var visit func(error, bool, bool) bool
 	visit = func(current error, tun, configure bool) bool {
 		if current == nil {
